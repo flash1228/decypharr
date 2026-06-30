@@ -929,6 +929,23 @@ func (d *Downloader) notifyArrFailedAndRemove(entry *storage.Entry, downloadErr 
 		return
 	}
 
+	// Before blacklisting, check whether the content already exists in the
+	// rclone mount (e.g. downloaded via torrent or TorBox cloud cache). If it
+	// does, skip the blacklist and just trigger a refresh so the Arr can import
+	// the existing files instead of re-searching for a new release.
+	mountAllPath := filepath.Join(d.manager.config.Mount.MountPath, "__all__", entry.Name)
+	if info, statErr := os.Stat(mountAllPath); statErr == nil && info.IsDir() {
+		d.logger.Info().
+			Str("entry", entry.Name).
+			Str("path", mountAllPath).
+			Msg("Content exists in rclone mount despite NNTP failure — skipping blacklist, triggering Arr refresh for import")
+		if refreshErr := a.Refresh(); refreshErr != nil {
+			d.logger.Error().Err(refreshErr).Str("entry", entry.Name).Msg("Failed to trigger Arr refresh")
+		}
+		_ = d.manager.queue.Delete(entry.InfoHash, nil)
+		return
+	}
+
 	// Send Discord/webhook notification so the user knows about the failure.
 	msg := "Download permanently failed: " + entry.Name + " [" + entry.Category + "] - " + downloadErr.Error()
 	d.manager.Notifications.Notify(notifications.Event{
