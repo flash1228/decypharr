@@ -919,9 +919,15 @@ func (d *Downloader) logDownloadCompletion(filename string, startTime time.Time,
 		Msg("download transfer completed")
 }
 
-// notifyArrFailedAndRemove tells the Arr (Sonarr/Radarr) to blacklist the
-// release and trigger a re-search, then removes the entry from our queue.
-// Only call this for permanent failures — not transient errors or outages.
+// notifyArrFailedAndRemove notifies the Arr that a permanent download failure
+// occurred and removes the entry from our queue so the Arr can re-search.
+//
+// We intentionally do NOT call MarkHistoryFailed (which would blacklist the
+// release by title across all sources). That cross-source blacklist would
+// prevent torrent grabs of the same release when only the Usenet NZB failed.
+// Instead we trigger a Refresh() so the Arr immediately polls the SABnzbd
+// history, sees the EntryStateError status, and uses its own per-source
+// retry logic to find the content elsewhere.
 func (d *Downloader) notifyArrFailedAndRemove(entry *storage.Entry, downloadErr error) {
 	a := d.manager.arr.GetOrCreate(entry.Category)
 	if a == nil || a.Host == "" || a.Token == "" {
@@ -929,16 +935,15 @@ func (d *Downloader) notifyArrFailedAndRemove(entry *storage.Entry, downloadErr 
 		return
 	}
 
-	// Before blacklisting, check whether the content already exists in the
-	// rclone mount (e.g. downloaded via torrent or TorBox cloud cache). If it
-	// does, skip the blacklist and just trigger a refresh so the Arr can import
-	// the existing files instead of re-searching for a new release.
+	// If the content already exists in the rclone mount (e.g. delivered via
+	// TorBox cloud cache or a prior torrent download), skip the failure path
+	// entirely and just trigger import of the existing files.
 	mountAllPath := filepath.Join(d.manager.config.Mount.MountPath, "__all__", entry.Name)
 	if info, statErr := os.Stat(mountAllPath); statErr == nil && info.IsDir() {
 		d.logger.Info().
 			Str("entry", entry.Name).
 			Str("path", mountAllPath).
-			Msg("Content exists in rclone mount despite NNTP failure — skipping blacklist, triggering Arr refresh for import")
+			Msg("Content exists in rclone mount despite NNTP failure — triggering Arr refresh for import")
 		if refreshErr := a.Refresh(); refreshErr != nil {
 			d.logger.Error().Err(refreshErr).Str("entry", entry.Name).Msg("Failed to trigger Arr refresh")
 		}
@@ -946,7 +951,7 @@ func (d *Downloader) notifyArrFailedAndRemove(entry *storage.Entry, downloadErr 
 		return
 	}
 
-	// Send Discord/webhook notification so the user knows about the failure.
+	// Send notification so the user knows about the failure.
 	msg := "Download permanently failed: " + entry.Name + " [" + entry.Category + "] - " + downloadErr.Error()
 	d.manager.Notifications.Notify(notifications.Event{
 		Type:    config.EventDownloadFailed,
@@ -956,29 +961,16 @@ func (d *Downloader) notifyArrFailedAndRemove(entry *storage.Entry, downloadErr 
 		Error:   downloadErr,
 	})
 
-	// Look up the grab history record in the Arr by downloadId so we can mark it failed.
-	hist := a.GetHistory(entry.InfoHash, "1") // eventType 1 = grabbed
-	if hist == nil || len(hist.Records) == 0 {
-		d.logger.Warn().
-			Str("entry", entry.Name).
-			Str("download_id", entry.InfoHash).
-			Msg("No grab history found in Arr; Arr will handle failure via SABnzbd polling")
-		return
-	}
-
-	histID := hist.Records[0].ID
-	if err := a.MarkHistoryFailed(histID); err != nil {
-		d.logger.Error().
-			Err(err).
-			Str("entry", entry.Name).
-			Int("history_id", histID).
-			Msg("Failed to report permanent download failure to Arr; entry remains in queue for polling fallback")
-		return
+	// Trigger an immediate Arr refresh so it polls the SABnzbd history and
+	// sees the failed status without waiting for the next poll cycle. The Arr
+	// will then re-search using its own per-indexer/per-protocol logic, which
+	// correctly limits retries to the source that actually failed.
+	if refreshErr := a.Refresh(); refreshErr != nil {
+		d.logger.Error().Err(refreshErr).Str("entry", entry.Name).Msg("Failed to trigger Arr refresh after permanent failure")
 	}
 
 	d.logger.Info().
 		Str("entry", entry.Name).
-		Int("history_id", histID).
-		Msg("Reported permanent download failure to Arr (blacklist + re-search triggered); removing from queue")
+		Msg("Triggered Arr refresh after permanent Usenet failure; Arr will re-search via its own per-source retry logic")
 	_ = d.manager.queue.Delete(entry.InfoHash, nil)
 }
