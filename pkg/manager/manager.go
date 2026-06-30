@@ -369,6 +369,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		if err := m.syncNZBs(ctx); err != nil {
 			m.logger.Error().Err(err).Msg("Failed to perform initial NZB syncTorrents")
 		}
+		// Notify Arr clients of any completed entries that may not have been
+		// imported (e.g. after a service restart where Sonarr/Radarr lost state).
+		m.renotifyCompletedEntries()
 		if fixNZB := os.Getenv("DECYPHARR_FIX_NZB_SIZES"); fixNZB == "1" {
 			m.logger.Info().Msg("Starting NZB file size correction as requested by environment variable")
 			m.fixNZBFileSizes(ctx)
@@ -665,4 +668,34 @@ func (m *Manager) processFromQueue(ctx context.Context) error {
 		return nil
 	}
 	return m.AddNewTorrent(ctx, importReq)
+}
+
+// renotifyCompletedEntries fires RefreshMonitoredDownloads on each Arr that
+// has completed-but-not-yet-deleted entries in our queue. This handles the
+// case where a service restart caused Sonarr/Radarr to miss the completion
+// notification and the import never happened.
+func (m *Manager) renotifyCompletedEntries() {
+	completed := m.queue.ListFilter("", config.ProtocolNZB, storage.EntryStatePausedUP, nil, "", false)
+	if len(completed) == 0 {
+		return
+	}
+	m.logger.Info().Int("count", len(completed)).Msg("Triggering Arr refresh for completed entries pending import")
+
+	seen := make(map[string]bool)
+	for _, e := range completed {
+		if seen[e.Category] {
+			continue
+		}
+		seen[e.Category] = true
+		a := m.arr.GetOrCreate(e.Category)
+		if a == nil || a.Host == "" || a.Token == "" {
+			continue
+		}
+		if err := a.Refresh(); err != nil {
+			m.logger.Error().
+				Err(err).
+				Str("category", e.Category).
+				Msg("Failed to trigger Arr refresh for completed entries")
+		}
+	}
 }

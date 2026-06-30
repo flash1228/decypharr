@@ -16,6 +16,7 @@ import (
 	grab "github.com/cavaliergopher/grab/v3"
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/sirrobot01/decypharr/internal/customerror"
 	"github.com/sirrobot01/decypharr/internal/nntp"
 	"github.com/sirrobot01/decypharr/pkg/manager/link"
 	"github.com/sirrobot01/decypharr/pkg/notifications"
@@ -699,9 +700,10 @@ func (d *Downloader) processUsenetDownload(entry *storage.Entry) (retErr error) 
 		// Every file is permanently gone — clean up and mark error so the arr
 		// client can blocklist the release and trigger a fresh search.
 		_ = os.RemoveAll(downloadedFolder)
-		entry.MarkAsError(fmt.Errorf("all %d file(s) unavailable on Usenet", permanentCount))
+		baseErr := fmt.Errorf("all %d file(s) unavailable on Usenet", permanentCount)
+		entry.MarkAsError(baseErr)
 		_ = d.manager.queue.Update(entry)
-		return fmt.Errorf("NZB download failed: all files unavailable on Usenet")
+		return customerror.NewPermanentError(baseErr)
 
 	case permanentCount > 0:
 		// Some files permanently missing but others downloaded successfully.
@@ -915,4 +917,51 @@ func (d *Downloader) logDownloadCompletion(filename string, startTime time.Time,
 		Dur("duration", elapsed).
 		Float64("speed_mbps", speedMBps).
 		Msg("download transfer completed")
+}
+
+// notifyArrFailedAndRemove tells the Arr (Sonarr/Radarr) to blacklist the
+// release and trigger a re-search, then removes the entry from our queue.
+// Only call this for permanent failures — not transient errors or outages.
+func (d *Downloader) notifyArrFailedAndRemove(entry *storage.Entry, downloadErr error) {
+	a := d.manager.arr.GetOrCreate(entry.Category)
+	if a == nil || a.Host == "" || a.Token == "" {
+		d.logger.Debug().Str("entry", entry.Name).Msg("No Arr configured for category; Arr will handle failure via SABnzbd polling")
+		return
+	}
+
+	// Send Discord/webhook notification so the user knows about the failure.
+	msg := "Download permanently failed: " + entry.Name + " [" + entry.Category + "] - " + downloadErr.Error()
+	d.manager.Notifications.Notify(notifications.Event{
+		Type:    config.EventDownloadFailed,
+		Status:  "error",
+		Entry:   entry,
+		Message: msg,
+		Error:   downloadErr,
+	})
+
+	// Look up the grab history record in the Arr by downloadId so we can mark it failed.
+	hist := a.GetHistory(entry.InfoHash, "1") // eventType 1 = grabbed
+	if hist == nil || len(hist.Records) == 0 {
+		d.logger.Warn().
+			Str("entry", entry.Name).
+			Str("download_id", entry.InfoHash).
+			Msg("No grab history found in Arr; Arr will handle failure via SABnzbd polling")
+		return
+	}
+
+	histID := hist.Records[0].ID
+	if err := a.MarkHistoryFailed(histID); err != nil {
+		d.logger.Error().
+			Err(err).
+			Str("entry", entry.Name).
+			Int("history_id", histID).
+			Msg("Failed to report permanent download failure to Arr; entry remains in queue for polling fallback")
+		return
+	}
+
+	d.logger.Info().
+		Str("entry", entry.Name).
+		Int("history_id", histID).
+		Msg("Reported permanent download failure to Arr (blacklist + re-search triggered); removing from queue")
+	_ = d.manager.queue.Delete(entry.InfoHash, nil)
 }

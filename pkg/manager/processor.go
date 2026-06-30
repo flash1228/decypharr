@@ -265,6 +265,13 @@ func (m *Manager) processAction(entry *storage.Entry) {
 			Err(err).
 			Str("name", entry.Name).
 			Msg("Error running post-download action")
+		// For permanent failures (e.g. all Usenet articles gone), proactively
+		// tell the Arr to blacklist the release and trigger a re-search rather
+		// than waiting for the next SABnzbd history poll cycle.
+		var custErr *customerror.Error
+		if errors.As(err, &custErr) && custErr.IsPermanent() {
+			m.downloader.notifyArrFailedAndRemove(entry, err)
+		}
 		return
 	}
 }
