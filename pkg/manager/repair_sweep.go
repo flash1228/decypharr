@@ -258,6 +258,7 @@ func (r *Repair) probeFile(ctx context.Context, item *storage.EntryItem, name st
 	res := fileResult{name: name}
 
 	if file == nil || file.InfoHash == "" {
+		r.logger.Debug().Str("entry", item.Name).Str("file", name).Msg("probeFile: missing_infohash")
 		res.reason = "missing_infohash"
 		return res
 	}
@@ -265,6 +266,7 @@ func (r *Repair) probeFile(ctx context.Context, item *storage.EntryItem, name st
 
 	entry, err := r.manager.GetEntry(file.InfoHash)
 	if err != nil || entry == nil {
+		r.logger.Debug().Err(err).Str("entry", item.Name).Str("file", name).Str("infohash", file.InfoHash).Msg("probeFile: entry_not_found")
 		res.reason = "entry_not_found"
 		return res
 	}
