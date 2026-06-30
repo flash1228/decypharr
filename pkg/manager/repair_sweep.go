@@ -290,6 +290,14 @@ func (r *Repair) probeNZBFile(ctx context.Context, entry *storage.Entry, name st
 		res.healthy = true
 		return res
 	}
+	r.logger.Debug().
+		Err(err).
+		Str("entry", entry.Name).
+		Str("infohash", entry.InfoHash).
+		Str("file", name).
+		Bool("is_nzb_not_found", errors.Is(err, usenet.ErrNZBNotFound)).
+		Bool("is_segment_missing", errors.Is(err, customerror.UsenetSegmentMissingError)).
+		Msg("probeNZBFile: CheckFile returned error")
 	if errors.Is(err, usenet.ErrNZBNotFound) {
 		res.broken = true
 		res.reason = "nzb_not_found"
