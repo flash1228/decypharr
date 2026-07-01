@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sirrobot01/decypharr/internal/customerror"
+
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
@@ -135,7 +137,11 @@ func (q *QBit) handleTorrentsAdd(w http.ResponseWriter, r *http.Request) {
 		for _, url := range urlList {
 			if err := q.addMagnet(ctx, url, _arr, debridName, action, cfg.Notifications.CallbackURL, rmTrackerUrls, cfg.SkipMultiSeason); err != nil {
 				q.logger.Debug().Msgf("Error adding magnet: %s", err.Error())
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				code := http.StatusBadRequest
+				if customerror.IsRetriableError(err) {
+					code = http.StatusServiceUnavailable
+				}
+				http.Error(w, err.Error(), code)
 				return
 			}
 			atleastOne = true
@@ -148,7 +154,11 @@ func (q *QBit) handleTorrentsAdd(w http.ResponseWriter, r *http.Request) {
 			for _, fileHeader := range files {
 				if err := q.addTorrent(ctx, fileHeader, _arr, debridName, action, cfg.Notifications.CallbackURL, rmTrackerUrls, cfg.SkipMultiSeason); err != nil {
 					q.logger.Debug().Err(err).Msgf("Error adding torrent")
-					http.Error(w, err.Error(), http.StatusBadRequest)
+					code := http.StatusBadRequest
+					if customerror.IsRetriableError(err) {
+						code = http.StatusServiceUnavailable
+					}
+					http.Error(w, err.Error(), code)
 					return
 				}
 				atleastOne = true

@@ -34,6 +34,18 @@ func (m *Manager) AddNewTorrent(ctx context.Context, importReq *ImportRequest) e
 			}
 			return nil
 		}
+		// Requeue transient debrid errors (API timeouts, maintenance, 503/504).
+		// A goroutine re-pushes after 30s so the worker is not blocked.
+		if customerror.IsRetriableError(err) {
+			m.logger.Warn().Err(err).Str("name", importReq.Magnet.Name).Msg("Transient debrid error, requeueing in 30s")
+			go func(req *ImportRequest) {
+				time.Sleep(30 * time.Second)
+				if reqErr := m.queue.ReQueue(req); reqErr != nil {
+					m.logger.Error().Err(reqErr).Str("name", req.Magnet.Name).Msg("Failed to requeue transient error")
+				}
+			}(importReq)
+			return nil
+		}
 		return fmt.Errorf("failed to submit torrent to debrid: %w", err)
 	}
 

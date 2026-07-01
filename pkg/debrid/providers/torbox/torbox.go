@@ -74,7 +74,7 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*Torbox, er
 		request.WithHeaders(headers),
 		request.WithRateLimiter(mainRL),
 		request.WithMaxRetries(cfg.Retries),
-		request.WithRetryableStatus(http.StatusTooManyRequests, http.StatusBadGateway),
+		request.WithRetryableStatus(http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout),
 		request.WithLogger(_log),
 	}
 	if dc.Proxy != "" {
@@ -251,6 +251,9 @@ func (tb *Torbox) SubmitMagnet(torrent *types.Torrent) (*types.Torrent, error) {
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout || resp.StatusCode == http.StatusBadGateway {
+			return nil, customerror.HosterUnavailableError
+		}
 		return nil, fmt.Errorf("torbox API error: Status: %d", resp.StatusCode)
 	}
 	if data.Data == nil {
