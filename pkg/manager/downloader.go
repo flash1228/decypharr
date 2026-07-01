@@ -160,6 +160,20 @@ func (d *Downloader) triggerArrRefresh(entry *storage.Entry) {
 		if a == nil || a.Host == "" || a.Token == "" {
 			return
 		}
+		// Wait until the Arr has committed a queue entry for this hash before
+		// sending RefreshMonitoredDownloads. For cached torrents the full
+		// pipeline (submit→symlink→complete) finishes in under a second, which
+		// races Sonarr writing the grab to its queue. Polling avoids both the
+		// race and adding a fixed delay to every import.
+		if entry.InfoHash != "" {
+			deadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(deadline) {
+				if a.HasQueueEntry(entry.InfoHash) {
+					break
+				}
+				time.Sleep(1 * time.Second)
+			}
+		}
 		if err := a.Refresh(); err != nil {
 			d.logger.Debug().
 				Err(err).

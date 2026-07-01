@@ -337,6 +337,27 @@ func (a *Arr) Refresh() error {
 	return nil
 }
 
+// HasQueueEntry returns true when the Arr has at least one queue entry whose
+// downloadId matches the given infohash. Used to detect when a grab has been
+// fully committed so RefreshMonitoredDownloads can be sent safely.
+func (a *Arr) HasQueueEntry(infoHash string) bool {
+	type record struct {
+		DownloadId string 
+	}
+	type queueResp struct {
+		Records []record 
+	}
+	var result queueResp
+	resp, err := a.Request("GET", "api/v3/queue?downloadId="+infoHash+"&pageSize=1", nil, &result)
+	if err != nil || resp == nil {
+		return false
+	}
+	if resp.Body != nil {
+		resp.Body.Close()
+	}
+	return len(result.Records) > 0
+}
+
 func inferType(host, name string) Type {
 	switch {
 	case strings.Contains(host, "sonarr") || strings.Contains(name, "sonarr"):
