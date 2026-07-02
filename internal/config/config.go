@@ -174,6 +174,21 @@ type Config struct {
 	CustomFolders         map[string]CustomFolders `json:"custom_folders,omitempty"`
 	DefaultDownloadAction DownloadAction           `json:"default_download_action,omitempty"`
 
+	// DownloadUID and DownloadGID set the ownership of every directory and
+	// symlink (or .strm file) that decypharr creates under download_folder.
+	// decypharr calls os.Lchown() after each create, so the arr application
+	// (e.g. Sonarr / Radarr running as uid 1000) can import without hitting
+	// "Permission denied" even when decypharr itself runs as root (PUID=0).
+	//
+	// Passing -1 for either value (or omitting the field) leaves that dimension
+	// unchanged — identical to lchown(2) semantics.
+	//
+	// Typical Docker/LXC setup:
+	//   "download_uid": 1000,
+	//   "download_gid": 1000
+	DownloadUID *int `json:"download_uid,omitempty"`
+	DownloadGID *int `json:"download_gid,omitempty"`
+
 	RefreshDirs  string `json:"refresh_dirs,omitempty"`
 	Retries      int    `json:"retries,omitempty"`
 	SkipAutoMove bool   `json:"skip_auto_move,omitempty"`

@@ -249,6 +249,40 @@ Mount configuration determines how files are exposed on the filesystem.
 
 Connect to an existing Rclone instance's RC API.
 
+## Download Folder Ownership
+
+When decypharr runs as root (the typical Docker/LXC setup with `PUID=0` for FUSE
+access) the directories and symlinks it creates under `download_folder` are owned
+by root. Arr applications such as Sonarr and Radarr usually run as uid 1000 and
+will receive `Permission denied` when they try to import those files.
+
+Set `download_uid` and `download_gid` to the uid/gid of your arr user to have
+decypharr call `lchown()` on every directory, symlink, and `.strm` file it
+creates. This matches ownership of the arr application without changing the mount
+or requiring an external cron job.
+
+```json
+{
+  "download_uid": 1000,
+  "download_gid": 1000
+}
+```
+
+| Field          | Type | Description                                                                      | Default          |
+|----------------|------|----------------------------------------------------------------------------------|------------------|
+| `download_uid` | int  | UID to assign to created download dirs and symlinks. `-1` leaves uid unchanged.  | `null` (no chown) |
+| `download_gid` | int  | GID to assign to created download dirs and symlinks. `-1` leaves gid unchanged.  | `null` (no chown) |
+
+:::note
+Omitting either field (or setting it to `null`) is equivalent to passing `-1` to
+`lchown(2)` — that dimension of ownership is left unchanged. You can set only one
+of the two if needed.
+
+This only works when decypharr has permission to call `lchown()` on the created
+paths — i.e. when it runs as root or as the current file owner. In a standard
+Docker/LXC setup with `PUID=0` this is always satisfied.
+:::
+
 ## Health Checker
 
 ```json

@@ -200,6 +200,27 @@ func (d *Downloader) markAsError(entry *storage.Entry, err error) {
 	})
 }
 
+// chownPath changes ownership of path to the configured download_uid/download_gid.
+// os.Lchown is used so symlinks themselves are chowned rather than their targets.
+// Passing -1 for uid or gid leaves that dimension unchanged (lchown(2) semantics).
+// This is a no-op when neither download_uid nor download_gid is set in config.
+func (d *Downloader) chownPath(path string) {
+	cfg := config.Get()
+	if cfg.DownloadUID == nil && cfg.DownloadGID == nil {
+		return
+	}
+	uid, gid := -1, -1
+	if cfg.DownloadUID != nil {
+		uid = *cfg.DownloadUID
+	}
+	if cfg.DownloadGID != nil {
+		gid = *cfg.DownloadGID
+	}
+	if err := os.Lchown(path, uid, gid); err != nil {
+		d.logger.Warn().Err(err).Str("path", path).Msg("Failed to set download path ownership")
+	}
+}
+
 // processSymlink creates symlinks for torrent files
 func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) error {
 	files := entry.GetActiveFiles()
@@ -211,6 +232,7 @@ func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) erro
 	if err != nil {
 		return fmt.Errorf("failed to create directory: %s: %v", torrentSymlinkPath, err)
 	}
+	d.chownPath(torrentSymlinkPath)
 
 	filePaths, err := d.createSymlinksWhenMountFilesAppear(entry, files, mountPath, torrentSymlinkPath)
 	if err != nil {
@@ -279,6 +301,7 @@ func (d *Downloader) createSymlinksWhenMountFilesAppear(entry *storage.Entry, fi
 				if err := os.Symlink(fullPath, fileSymlinkPath); err != nil && !os.IsExist(err) {
 					return fmt.Errorf("failed to create symlink %s -> %s: %w", fileSymlinkPath, fullPath, err)
 				}
+				d.chownPath(fileSymlinkPath)
 				filePaths = append(filePaths, fileSymlinkPath)
 				delete(remainingFiles, entryName)
 				d.logger.Info().Msgf("File is ready: %s/%s", entry.GetFolder(), file.Name)
@@ -514,6 +537,7 @@ func (d *Downloader) processTorrentDownload(entry *storage.Entry) (retErr error)
 	if err := os.MkdirAll(downloadedFolder, os.ModePerm); err != nil {
 		return fmt.Errorf("failed to create download directory: %s: %v", downloadedFolder, err)
 	}
+	d.chownPath(downloadedFolder)
 	entry.SizeDownloaded = 0
 	entry.IsDownloading = true
 	entry.Progress = 0
@@ -616,6 +640,7 @@ func (d *Downloader) processUsenetDownload(entry *storage.Entry) (retErr error) 
 	if err := os.MkdirAll(downloadedFolder, os.ModePerm); err != nil {
 		return fmt.Errorf("failed to create download directory: %s: %v", downloadedFolder, err)
 	}
+	d.chownPath(downloadedFolder)
 
 	totalSize := int64(0)
 	for _, file := range files {
@@ -746,6 +771,7 @@ func (d *Downloader) processStrm(torrent *storage.Entry) error {
 	if err != nil {
 		return fmt.Errorf("failed to create directory: %s: %v", torrentSymlinkPath, err)
 	}
+	d.chownPath(torrentSymlinkPath)
 
 	for _, file := range files {
 		strmFilePath := filepath.Join(torrentSymlinkPath, file.Name+".strm")
@@ -763,6 +789,7 @@ func (d *Downloader) processStrm(torrent *storage.Entry) error {
 		if err := os.WriteFile(strmFilePath, []byte(streamURL), 0644); err != nil {
 			return fmt.Errorf("failed to create .strm file: %s: %v", strmFilePath, err)
 		}
+		d.chownPath(strmFilePath)
 	}
 	d.completeEntry(torrent)
 	d.logger.Info().Str("destination", torrentSymlinkPath).Msgf("Created .strm files for %s", torrent.Name)
