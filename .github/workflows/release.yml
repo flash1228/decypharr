@@ -12,6 +12,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
+  REGISTRY_HUB: docker.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
