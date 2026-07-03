@@ -42,6 +42,7 @@ type Torbox struct {
 	accountsManager       *account.Manager
 	autoExpiresLinksAfter time.Duration
 	client                *request.Client
+	nzbUploadClient       *http.Client
 	logger                zerolog.Logger
 	Profile               *types.Profile
 	config                config.Debrid
@@ -94,6 +95,14 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*Torbox, er
 		autoExpiresLinksAfter: autoExpiresLinksAfter,
 		client:                request.New(opts...),
 		logger:                _log,
+		nzbUploadClient: &http.Client{
+			Timeout: 180 * time.Second,
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 120 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				IdleConnTimeout:       30 * time.Second,
+			},
+		},
 	}
 	return tb, nil
 }
