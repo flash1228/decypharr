@@ -17,6 +17,9 @@ func (m *Manager) runInitialCalls(ctx context.Context) {
 	go m.trackAvailableSlots(ctx)
 	go m.processQueuedEntries()
 	go m.syncAccounts()
+	// Recover TorBox usenet entries whose processSymlink goroutine was interrupted
+	// by a restart (state=pausedUP, IsComplete=false). Must run after queue is loaded.
+	go m.recoverTorboxUsenetEntries()
 }
 
 func (m *Manager) syncAccounts() {

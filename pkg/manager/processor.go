@@ -87,6 +87,31 @@ func (m *Manager) AddNewTorrent(ctx context.Context, importReq *ImportRequest) e
 	return nil
 }
 
+// recoverTorboxUsenetEntries is called once on startup to re-process TorBox
+// usenet entries that completed finalization (state=pausedUP, ActiveProvider set)
+// but whose processSymlink goroutine was interrupted by a restart before
+// completeEntry was called (IsComplete=false). Without this, they stay stuck.
+func (m *Manager) recoverTorboxUsenetEntries() {
+	pausedUP := m.queue.ListFilter("", config.ProtocolNZB, storage.EntryStatePausedUP, nil, "", false)
+	for _, entry := range pausedUP {
+		if entry.IsComplete || entry.ActiveProvider == "" {
+			continue
+		}
+		// Entry has TorBox usenet provider but processSymlink never finished.
+		// Re-run processAction which is idempotent: AddOrUpdate updates storage,
+		// processSymlink skips already-created symlinks (os.IsExist), and
+		// completeEntry fires once waitForSymlinkFilesReady succeeds.
+		if _, loaded := m.processingEntries.LoadOrStore(entry.InfoHash, struct{}{}); loaded {
+			continue
+		}
+		m.logger.Info().Str("name", entry.Name).Msg("Recovering incomplete TorBox usenet entry after restart")
+		go func(e *storage.Entry) {
+			defer m.processingEntries.Delete(e.InfoHash)
+			m.processAction(e)
+		}(entry)
+	}
+}
+
 func (m *Manager) processQueuedEntries() {
 	queueEntries := m.queue.ListFilter("", config.ProtocolAll, storage.EntryStateDownloading, nil, "", true)
 	if len(queueEntries) == 0 {
