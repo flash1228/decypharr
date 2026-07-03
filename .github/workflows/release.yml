@@ -195,12 +195,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+#      - name: Login to Docker Hub
+#        uses: docker/login-action@v3
+#        with:
+#          registry: docker.io
+#          username: ${{ secrets.DOCKERHUB_USERNAME }}
+#          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -212,10 +212,10 @@ jobs:
             VERSION=${{ needs.prepare.outputs.version }}
             CHANNEL=${{ needs.prepare.outputs.channel }}
           tags: |
-            ${{ env.REGISTRY_GHCR }}:${{ github.ref_name }}
-            ${{ env.REGISTRY_GHCR }}:latest
-            ${{ env.REGISTRY_HUB }}:${{ github.ref_name }}
-            ${{ env.REGISTRY_HUB }}:latest
+            ${{ env.REGISTRY }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}:latest
+#            ${{ env.REGISTRY_HUB }}:${{ github.ref_name }}
+#            ${{ env.REGISTRY_HUB }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
