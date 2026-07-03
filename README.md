@@ -75,6 +75,8 @@ Decypharr is configured via a single `config.json` file placed in the `/app` vol
 | `remove_stalled_after` | string | `"10m"` | Remove a download from the queue if stalled this long |
 | `skip_pre_cache` | bool | `false` | Skip pre-caching content on the debrid side |
 | `allowed_file_types` | array | (media extensions) | Whitelist of file extensions to process |
+| `download_uid` | int | `null` | UID to set on created download dirs and symlinks (`-1` = no change) |
+| `download_gid` | int | `null` | GID to set on created download dirs and symlinks (`-1` = no change) |
 
 ### `debrids[]` — Debrid provider configuration
 
@@ -327,6 +329,18 @@ The Username/Password fields are used internally by decypharr for callback routi
 This fork ([TwistedRat/decypharr](https://github.com/TwistedRat/decypharr)) contains the following fixes and improvements on top of upstream:
 
 ### Bug Fixes
+
+- **`fix: skip directory creation when no files pass allowed_file_types filter`**
+  When a torrent contains only files with disallowed extensions (e.g. fake or malware releases with `.exe` or `.scr` files), all files are filtered by `allowed_file_types` during ingestion, leaving the entry with zero eligible files. Previously, `processSymlink` still created the download directory with no symlinks inside it. Sonarr/Radarr would then report "no files found are eligible for import" and stall in the queue indefinitely, requiring manual cleanup and a new search. Now, if no eligible files are found, an error is returned before the directory is created, allowing the Arr to immediately retry with a different release.
+
+- **`fix(nzb): stop normalizeNZBFileSizes from corrupting valid file sizes`**
+  `streamSizeFromSegments` uses `max(seg.EndOffset+1)` to estimate file size, which underestimates for sliced RAR segments (offsets are volume-relative, not cumulative). The reduction condition was silently shrinking correctly-parsed multi-GB NZB files down to a single segment size (~50 MB), causing any seek beyond that size to error out. Fix: `normalizeNZBFileSizes` now only fills in missing (zero) sizes from segment data — it never reduces a size that is already positive. Also: `usenet.go` returns a silent error (not a noisy retried error) when `rangeStart >= volume size`, stopping log spam from stale data.
+
+- **`feat: chown download dirs and symlinks to configurable uid/gid`**
+  When decypharr runs as root (required for FUSE in Docker/LXC), download directories and symlinks were created owned by root. Arr applications running as uid 1000 then failed to import with `EACCES`. Two new config fields — `download_uid` and `download_gid` — allow ownership to be set on every directory, symlink, and `.strm` file created under `download_folder`. `Lchown` is used rather than `Chown` so symlinks themselves are chowned rather than their rclone VFS targets. Omitting the fields (or setting `-1`) leaves ownership unchanged, preserving existing behaviour. Typical setup: `"download_uid": 1000, "download_gid": 1000`.
+
+- **`fix(arr): poll Arr queue instead of fixed delay before RefreshMonitoredDownloads`**
+  For cached torrents, the full pipeline (submit → symlink → complete) finishes in under a second — the same second Sonarr is still writing the grab queue entries to its database. Sending `RefreshMonitoredDownloads` before those entries are committed caused Sonarr to find nothing to import and mark entries as warning, triggering unnecessary retries. Instead of a fixed 5-second sleep, decypharr now polls `GET /api/v3/queue?downloadId=<hash>` once per second (up to 30 s) and fires `RefreshMonitoredDownloads` as soon as the entry appears. This eliminates the race condition without adding unnecessary latency on slow downloads.
 
 - **`fix(qbit): populate completion_on from entry CompletedAt`**
   `completion_on` was hardcoded to `0` in the qBittorrent API response. Sonarr uses this field to detect completed downloads and trigger imports — with it always being 0, imports never fired even when symlinks were fully ready.
