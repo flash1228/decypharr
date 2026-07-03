@@ -262,8 +262,9 @@ func (m *Manager) tryTorboxUsenet(ctx context.Context, req *ImportRequest) (stri
 	return m.addNZBViaTorbox(ctx, req, nc, debridName)
 }
 
-// addNZBViaTorbox submits the NZB to TorBox's usenet API, waits for it to be cached,
-// then builds a storage.Entry and hands it to the normal processAction pipeline.
+// addNZBViaTorbox submits the NZB to TorBox's usenet API, returns the entry ID
+// immediately, then polls for cache completion in the background. This keeps the
+// SABnzbd HTTP response fast so Sonarr/Radarr don't time out waiting.
 func (m *Manager) addNZBViaTorbox(ctx context.Context, req *ImportRequest, nc debridCommon.NZBClient, debridName string) (string, error) {
 	m.logger.Info().Str("name", req.Name).Str("debrid", debridName).Msg("Submitting NZB to TorBox usenet API")
 
@@ -273,32 +274,20 @@ func (m *Manager) addNZBViaTorbox(ctx context.Context, req *ImportRequest, nc de
 		return "", nil // recoverable — fall through
 	}
 
-	m.logger.Info().Str("name", req.Name).Str("usenet_id", usenetID).Msg("NZB submitted to TorBox usenet, waiting for cache")
-
-	dl, err := nc.WaitForUsenetCached(ctx, usenetID, m.usenetTimeout)
-	if err != nil {
-		m.logger.Warn().Err(err).Str("name", req.Name).Str("usenet_id", usenetID).
-			Msg("TorBox usenet cache wait failed, falling back to NNTP")
-		_ = nc.DeleteUsenetDownload(ctx, usenetID)
-		return "", nil // recoverable — fall through
-	}
-
-	cfg := config.Get()
+	// Create the entry immediately in a downloading state and return — don't block
+	// on TorBox cache polling. Sonarr/Radarr get a fast ACK; we finish async.
 	entryID := uuid.New().String()
 	now := time.Now()
-
 	entry := &storage.Entry{
 		InfoHash:         entryID,
-		Name:             dl.Name,
-		OriginalFilename: dl.Name,
-		Size:             dl.Size,
+		Name:             req.Name,
+		OriginalFilename: req.Name,
 		Protocol:         config.ProtocolNZB,
-		Bytes:            dl.Size,
 		Category:         req.Arr.Name,
 		SavePath:         filepath.Join(req.DownloadFolder, req.Arr.Name),
-		Status:           debridTypes.TorrentStatusDownloaded,
-		State:            storage.EntryStatePausedUP,
-		Progress:         1.0,
+		Status:           debridTypes.TorrentStatusDownloading,
+		State:            storage.EntryStateDownloading,
+		Progress:         0,
 		Action:           req.Action,
 		CallbackURL:      req.CallBackUrl,
 		SkipMultiSeason:  req.SkipMultiSeason,
@@ -312,57 +301,91 @@ func (m *Manager) addNZBViaTorbox(ctx context.Context, req *ImportRequest, nc de
 	}
 	entry.ContentPath = entry.DownloadPath()
 
-	providerEntry := &storage.ProviderEntry{
-		Provider:     debridName,
-		ID:           usenetID,
-		AddedAt:      now,
-		DownloadedAt: &now,
-		Status:       debridTypes.TorrentStatusDownloaded,
-		Progress:     1.0,
-		Files:        make(map[string]*storage.ProviderFile),
-	}
-
-	for _, f := range dl.Files {
-		fileName := filepath.Base(f.Name)
-		if err := cfg.IsFileAllowed(f.Name, f.Size); err != nil {
-			m.logger.Debug().Str("file", f.Name).Err(err).Msg("TorBox usenet: skipping disallowed file")
-			continue
-		}
-		link := torbox.BuildUsenetLink(usenetID, f.ID)
-		providerEntry.Files[fileName] = &storage.ProviderFile{
-			Id:   f.ID,
-			Link: link,
-			Path: f.Path,
-		}
-		entry.Files[fileName] = &storage.File{
-			Name:     fileName,
-			Size:     f.Size,
-			InfoHash: entryID,
-			AddedOn:  now,
-			Path:     f.Path,
-		}
-	}
-
-	if len(entry.Files) == 0 {
-		m.logger.Warn().Str("name", req.Name).Str("usenet_id", usenetID).
-			Msg("TorBox usenet: no eligible files after allowed_file_types filter, falling back to NNTP")
-		_ = nc.DeleteUsenetDownload(ctx, usenetID)
-		return "", nil // recoverable — fall through
-	}
-
-	entry.Providers[debridName] = providerEntry
-
 	if err := m.queue.Add(entry); err != nil {
 		return "", fmt.Errorf("failed to add TorBox usenet entry to queue: %w", err)
 	}
 
-	m.logger.Info().
-		Str("name", dl.Name).
-		Str("usenet_id", usenetID).
-		Int("files", len(entry.Files)).
-		Msg("TorBox usenet entry queued, processing action")
+	m.logger.Info().Str("name", req.Name).Str("usenet_id", usenetID).Msg("NZB submitted to TorBox usenet, polling in background")
 
-	go m.processAction(entry)
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), m.usenetTimeout)
+		defer cancel()
+
+		dl, err := nc.WaitForUsenetCached(bgCtx, usenetID, m.usenetTimeout)
+		if err != nil {
+			m.logger.Warn().Err(err).Str("name", req.Name).Str("usenet_id", usenetID).
+				Msg("TorBox usenet cache wait failed — marking entry errored")
+			_ = nc.DeleteUsenetDownload(bgCtx, usenetID)
+			entry.State = storage.EntryStateError
+			entry.Status = debridTypes.TorrentStatusError
+			entry.UpdatedAt = time.Now()
+			_ = m.queue.Update(entry)
+			return
+		}
+
+		cfg := config.Get()
+		providerEntry := &storage.ProviderEntry{
+			Provider:     debridName,
+			ID:           usenetID,
+			AddedAt:      now,
+			DownloadedAt: func() *time.Time { t := time.Now(); return &t }(),
+			Status:       debridTypes.TorrentStatusDownloaded,
+			Progress:     1.0,
+			Files:        make(map[string]*storage.ProviderFile),
+		}
+
+		for _, f := range dl.Files {
+			fileName := filepath.Base(f.Name)
+			if err := cfg.IsFileAllowed(f.Name, f.Size); err != nil {
+				m.logger.Debug().Str("file", f.Name).Err(err).Msg("TorBox usenet: skipping disallowed file")
+				continue
+			}
+			link := torbox.BuildUsenetLink(usenetID, f.ID)
+			providerEntry.Files[fileName] = &storage.ProviderFile{
+				Id:   f.ID,
+				Link: link,
+				Path: f.Path,
+			}
+			entry.Files[fileName] = &storage.File{
+				Name:     fileName,
+				Size:     f.Size,
+				InfoHash: entryID,
+				AddedOn:  now,
+				Path:     f.Path,
+			}
+		}
+
+		if len(entry.Files) == 0 {
+			m.logger.Warn().Str("name", req.Name).Str("usenet_id", usenetID).
+				Msg("TorBox usenet: no eligible files after allowed_file_types filter — marking entry errored")
+			_ = nc.DeleteUsenetDownload(bgCtx, usenetID)
+			entry.State = storage.EntryStateError
+			entry.Status = debridTypes.TorrentStatusError
+			entry.UpdatedAt = time.Now()
+			_ = m.queue.Update(entry)
+			return
+		}
+
+		entry.Providers[debridName] = providerEntry
+		entry.Name = dl.Name
+		entry.OriginalFilename = dl.Name
+		entry.Size = dl.Size
+		entry.Bytes = dl.Size
+		entry.Status = debridTypes.TorrentStatusDownloaded
+		entry.State = storage.EntryStatePausedUP
+		entry.Progress = 1.0
+		entry.UpdatedAt = time.Now()
+		_ = m.queue.Update(entry)
+
+		m.logger.Info().
+			Str("name", dl.Name).
+			Str("usenet_id", usenetID).
+			Int("files", len(entry.Files)).
+			Msg("TorBox usenet entry ready, processing action")
+
+		go m.processAction(entry)
+	}()
+
 	return entryID, nil
 }
 
