@@ -34,6 +34,6 @@ type usenetInfo struct {
 type usenetListResponse APIResponse[[]usenetInfo]
 type usenetInfoResponse APIResponse[usenetInfo]
 type addNZBResponse APIResponse[struct {
-	Id   int    `json:"id"`
+	Id   int    `json:"usenetdownload_id"`
 	Hash string `json:"hash"`
 }]
