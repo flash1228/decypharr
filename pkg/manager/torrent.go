@@ -137,6 +137,14 @@ func (m *Manager) detectTorrentChanges(provider string, remoteTorrentsByHash map
 
 	err = m.storage.ForEachBatch(refreshBatchSize, func(batch []*storage.Entry) error {
 		for _, entry := range batch {
+			// NZB entries (TorBox usenet downloads) are managed by the usenet polling
+			// loop, not the torrent sync loop. Their InfoHashes are UUIDs that never
+			// appear in the debrid torrent API, so skipping them here prevents the sync
+			// from incorrectly deleting them.
+			if entry.Protocol == config.ProtocolNZB {
+				continue
+			}
+
 			cachedInfoHashes[entry.InfoHash] = true
 
 			currentTorrent, onRemote := remoteTorrentsByHash[entry.InfoHash]
