@@ -14,6 +14,7 @@ env:
   REGISTRY: ghcr.io
   REGISTRY_HUB: docker.io
   IMAGE_NAME: ${{ github.repository }}
+  LDFLAGS_PKG: github.com/flash1228/decypharr/pkg/version  
 
 jobs:
   # Determine release channel from tag
