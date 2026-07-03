@@ -10,9 +10,8 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_GHCR: ghcr.io/sirrobot01/decypharr
-  REGISTRY_HUB: docker.io/cy01/blackhole
-  LDFLAGS_PKG: github.com/sirrobot01/decypharr/pkg/version
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   # Determine release channel from tag
