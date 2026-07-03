@@ -225,6 +225,16 @@ func (d *Downloader) chownPath(path string) {
 func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) error {
 	files := entry.GetActiveFiles()
 	torrentSymlinkPath := entry.DownloadPath()
+
+	// Guard: if no files passed the allowed_file_types filter, bail out before
+	// creating an empty directory. An empty dir causes Sonarr/Radarr to report
+	// "no files found eligible for import" and stall in the queue indefinitely.
+	if len(files) == 0 {
+		d.logger.Warn().Str("mount_path", mountPath).Str("entry", entry.Name).
+			Msg("No eligible files found — all files filtered by allowed_file_types; skipping directory creation")
+		return fmt.Errorf("no eligible files found for %q: all files were filtered by allowed_file_types (check for fake/malware releases with .exe/.scr extensions)", entry.Name)
+	}
+
 	d.logger.Info().Str("mount_path", mountPath).Msgf("Creating symlinks for %d files in %s", len(files), torrentSymlinkPath)
 
 	// Create symlink directory
