@@ -330,7 +330,6 @@ func (m *Manager) addNZBViaTorbox(ctx context.Context, req *ImportRequest, nc de
 			return
 		}
 
-		cfg := config.Get()
 		providerEntry := &storage.ProviderEntry{
 			Provider:     debridName,
 			ID:           usenetID,
@@ -343,10 +342,9 @@ func (m *Manager) addNZBViaTorbox(ctx context.Context, req *ImportRequest, nc de
 
 		for _, f := range dl.Files {
 			fileName := filepath.Base(f.Name)
-			if err := cfg.IsFileAllowed(f.Name, f.Size); err != nil {
-				m.logger.Debug().Str("file", f.Name).Err(err).Msg("TorBox usenet: skipping disallowed file")
-				continue
-			}
+			m.logger.Debug().Str("file", fileName).Int64("size", f.Size).Msg("TorBox usenet: file in download")
+			// No extension filter for TorBox usenet — TorBox may return .rar parts
+			// or other container formats; extension filtering is handled server-side.
 			link := torbox.BuildUsenetLink(usenetID, f.ID)
 			providerEntry.Files[fileName] = &storage.ProviderFile{
 				Id:   f.ID,
