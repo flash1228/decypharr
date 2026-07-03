@@ -311,6 +311,20 @@ func (m *Manager) addNZBViaTorbox(ctx context.Context, req *ImportRequest, nc de
 		bgCtx, cancel := context.WithTimeout(context.Background(), m.usenetTimeout)
 		defer cancel()
 
+		// Check active queue depth before submitting — TorBox allows max 6 concurrent usenet downloads.
+		if activeCount, countErr := nc.GetActiveUsenetCount(bgCtx); countErr == nil {
+			m.logger.Info().Int("active", activeCount).Str("name", nzbName).Msg("TorBox usenet active download count")
+			if activeCount >= 6 {
+				m.logger.Warn().Int("active", activeCount).Str("name", nzbName).
+					Msg("TorBox usenet queue full (6 active) — marking entry errored; clear queue before retrying")
+				entry.State = storage.EntryStateError
+				entry.Status = debridTypes.TorrentStatusError
+				entry.UpdatedAt = time.Now()
+				_ = m.queue.Update(entry)
+				return
+			}
+		}
+
 		usenetID, err := nc.SubmitNZB(bgCtx, nzbContent, nzbName)
 		if err != nil {
 			m.logger.Warn().Err(err).Str("name", nzbName).Msg("TorBox usenet submit failed — marking entry errored")

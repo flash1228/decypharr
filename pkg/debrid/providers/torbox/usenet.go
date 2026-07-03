@@ -76,6 +76,30 @@ func (tb *Torbox) SubmitNZB(ctx context.Context, nzbContent []byte, name string)
 	return strconv.Itoa(result.Data.Id), nil
 }
 
+// maxActiveUsenetDownloads is the TorBox Pro concurrent usenet download queue limit.
+const maxActiveUsenetDownloads = 6
+
+// GetActiveUsenetCount returns how many usenet downloads are currently active (queued or downloading).
+func (tb *Torbox) GetActiveUsenetCount(ctx context.Context) (int, error) {
+	var res usenetListResponse
+	resp, err := tb.doGet("/api/usenet/mylist", map[string]string{"bypass_cache": "true"}, &res)
+	if err != nil {
+		return 0, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("torbox usenet mylist: HTTP %d", resp.StatusCode)
+	}
+	count := 0
+	if res.Data != nil {
+		for _, dl := range *res.Data {
+			if dl.Active {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
 // GetUsenetDownload fetches the current state of a TorBox usenet download by ID.
 // /mylist?id=N returns a single object, not an array.
 func (tb *Torbox) GetUsenetDownload(ctx context.Context, id string) (*usenetInfo, error) {
@@ -132,9 +156,10 @@ func (tb *Torbox) WaitForUsenetCached(ctx context.Context, id string, timeout ti
 		case "error", "failed", "virus", "timeout":
 			return nil, fmt.Errorf("torbox usenet download %s failed with state %q", id, info.DownloadState)
 		case "paused":
-			// Resume paused downloads automatically.
-			tb.logger.Debug().Str("usenet_id", id).Msg("TorBox usenet download paused — resuming")
-			_ = tb.resumeUsenetDownload(ctx, id)
+			// TorBox auto-manages its queue; system-paused downloads resume automatically
+			// when a download slot is free. The controlusenetdownload API cannot unblock
+			// system-managed pauses (returns 400). Just wait.
+			tb.logger.Debug().Str("usenet_id", id).Msg("TorBox usenet download queued (paused) — waiting for slot")
 		}
 
 		if time.Now().After(deadline) {
@@ -156,30 +181,25 @@ func (tb *Torbox) WaitForUsenetCached(ctx context.Context, id string, timeout ti
 	}
 }
 
-// resumeUsenetDownload sends a Resume action to TorBox for a paused usenet download.
-func (tb *Torbox) resumeUsenetDownload(ctx context.Context, id string) error {
-	payload := map[string]string{"usenet_id": id, "action": "Resume"}
-	resp, err := tb.doDelete(fmt.Sprintf("/api/usenet/controlusenet/%s", id), payload)
+// controlUsenetDownload sends a control operation to TorBox for a usenet download.
+// Valid operations: "Delete", "Pause", "Resume".
+// Note: TorBox auto-manages its download queue; system-paused downloads cannot
+// be resumed via this endpoint (returns 400). Only user-paused downloads respond.
+func (tb *Torbox) controlUsenetDownload(ctx context.Context, id string, operation string) error {
+	payload := map[string]interface{}{"usenet_id": id, "operation": operation}
+	resp, err := tb.doPost("/api/usenet/controlusenetdownload", payload)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("torbox controlusenet resume: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("torbox controlusenetdownload %s: HTTP %d", operation, resp.StatusCode)
 	}
 	return nil
 }
 
 // DeleteUsenetDownload removes a usenet download from TorBox.
 func (tb *Torbox) DeleteUsenetDownload(ctx context.Context, id string) error {
-	payload := map[string]string{"usenet_id": id, "action": "Delete"}
-	resp, err := tb.doDelete(fmt.Sprintf("/api/usenet/controlusenet/%s", id), payload)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("torbox controlusenet: HTTP %d", resp.StatusCode)
-	}
-	return nil
+	return tb.controlUsenetDownload(ctx, id, "Delete")
 }
 
 // fetchUsenetDownloadLink fetches a CDN download URL for a specific file in a usenet download.

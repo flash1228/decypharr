@@ -61,4 +61,6 @@ type NZBClient interface {
 	WaitForUsenetCached(ctx context.Context, id string, timeout time.Duration, onProgress func(float64)) (*UsenetDownload, error)
 	// DeleteUsenetDownload removes a usenet download from the provider.
 	DeleteUsenetDownload(ctx context.Context, id string) error
+	// GetActiveUsenetCount returns how many usenet downloads are currently active (queued or downloading).
+	GetActiveUsenetCount(ctx context.Context) (int, error)
 }
