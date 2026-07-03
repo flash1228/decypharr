@@ -404,6 +404,9 @@ This fork ([TwistedRat/decypharr](https://github.com/TwistedRat/decypharr)) cont
 
 ### Features
 
+- **`feat(torbox): TorBox Pro usenet API backend for NZB downloads`**
+  When a TorBox debrid provider is configured and the account is on the **Pro plan**, incoming NZBs (from Sonarr/Radarr via the SABnzbd handler) are automatically routed through TorBox's usenet API (`/api/usenet/createusenetdownload`) instead of being streamed over NNTP. decypharr polls until the content is cached on TorBox's CDN, then builds the download entry and hands it to the normal symlink/arr-notification pipeline. Falls back to NNTP transparently on any TorBox error or timeout. Own NNTP providers remain fully functional and are always used as the fallback. Plan detection is automatic — no extra config required on Pro; the feature self-disables on Essential/Standard plans. Power users can override routing per debrid with `"usenet_backend": "torbox"` (force TorBox) or `"usenet_backend": "nntp"` (force NNTP, skip TorBox API entirely).
+
 - **`feat: proactive Arr blacklist on permanent failures + startup re-notification`**
   Permanent debrid failures (e.g. content unavailable on provider) are now proactively reported back to the Arr so it can immediately search for an alternative release.
 

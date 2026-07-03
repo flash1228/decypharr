@@ -35,6 +35,12 @@ type Debrid struct {
 
 	// Directories
 	Directories map[string]WebdavDirectories `json:"directories,omitempty"` // Deprecated. Use global setting instead.
+
+	// UsenetBackend controls NZB routing for this debrid provider.
+	// "auto" (default): use TorBox usenet API when Pro plan is detected, fall back to NNTP.
+	// "torbox": always use TorBox usenet API (fails if plan is not Pro).
+	// "nntp": always use configured NNTP providers, skip TorBox usenet API.
+	UsenetBackend string `json:"usenet_backend,omitempty"`
 }
 
 func (c *Config) updateDebrid(d Debrid) Debrid {

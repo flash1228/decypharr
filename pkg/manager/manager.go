@@ -587,10 +587,25 @@ func (m *Manager) DeleteEntry(infohash string, removePlacements bool) error {
 		return err
 	}
 
-	// Clean up NZB metadata so WebDAV stops serving the file path after deletion
-	if torr.Protocol == config.ProtocolNZB && m.usenet != nil {
-		if err := m.usenet.Delete(infohash); err != nil {
-			m.logger.Warn().Err(err).Str("infohash", infohash).Msg("Failed to delete NZB metadata after queue entry deletion")
+	// Clean up NZB metadata so WebDAV stops serving the file path after deletion.
+	// TorBox usenet entries (ActiveProvider != "usenet") are cleaned up via the debrid client.
+	// NNTP entries use the local usenet client.
+	if torr.Protocol == config.ProtocolNZB {
+		if torr.ActiveProvider != "" && torr.ActiveProvider != "usenet" {
+			if client, ok := m.clients.Load(torr.ActiveProvider); ok {
+				if nc, ok := client.(debrid.NZBClient); ok {
+					if placement := torr.GetActiveProvider(); placement != nil {
+						if err := nc.DeleteUsenetDownload(context.Background(), placement.ID); err != nil {
+							m.logger.Warn().Err(err).Str("infohash", infohash).Str("usenet_id", placement.ID).
+								Msg("Failed to delete TorBox usenet download after queue entry deletion")
+						}
+					}
+				}
+			}
+		} else if m.usenet != nil {
+			if err := m.usenet.Delete(infohash); err != nil {
+				m.logger.Warn().Err(err).Str("infohash", infohash).Msg("Failed to delete NZB metadata after queue entry deletion")
+			}
 		}
 	}
 

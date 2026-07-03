@@ -492,21 +492,33 @@ func (tb *Torbox) GetDownloadLink(id string, file *types.File) (types.DownloadLi
 }
 
 func (tb *Torbox) fetchDownloadLink(account *account.Account, id string, file *types.File) (types.DownloadLink, error) {
-	var res DownloadLinksResponse
+	var cdnURL string
 
-	resp, err := tb.doGet("/api/torrents/requestdl", map[string]string{
-		"token":      account.Token,
-		"torrent_id": id,
-		"file_id":    file.Id,
-	}, &res)
-	if err != nil {
-		return types.DownloadLink{}, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return types.DownloadLink{}, fmt.Errorf("torbox requestdl error: HTTP %d", resp.StatusCode)
-	}
-	if !res.Success || res.Data == nil || *res.Data == "" {
-		return types.DownloadLink{}, fmt.Errorf("torbox: empty CDN URL from requestdl: %s", res.Detail)
+	if usenetID, fileID, ok := ParseUsenetLink(file.Link); ok {
+		// NZB submitted via TorBox usenet API — use the usenet download endpoint.
+		url, err := tb.fetchUsenetDownloadLink(account, usenetID, fileID)
+		if err != nil {
+			return types.DownloadLink{}, err
+		}
+		cdnURL = url
+	} else {
+		// Standard torrent download link.
+		var res DownloadLinksResponse
+		resp, err := tb.doGet("/api/torrents/requestdl", map[string]string{
+			"token":      account.Token,
+			"torrent_id": id,
+			"file_id":    file.Id,
+		}, &res)
+		if err != nil {
+			return types.DownloadLink{}, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return types.DownloadLink{}, fmt.Errorf("torbox requestdl error: HTTP %d", resp.StatusCode)
+		}
+		if !res.Success || res.Data == nil || *res.Data == "" {
+			return types.DownloadLink{}, fmt.Errorf("torbox: empty CDN URL from requestdl: %s", res.Detail)
+		}
+		cdnURL = *res.Data
 	}
 
 	// TorBox CDN URLs are valid for 3 hours. Never cache them longer than that
@@ -524,7 +536,7 @@ func (tb *Torbox) fetchDownloadLink(account *account.Account, id string, file *t
 		Size:         file.Size,
 		Token:        tb.APIKey,
 		Link:         file.Link,
-		DownloadLink: *res.Data,
+		DownloadLink: cdnURL,
 		Debrid:       tb.config.Name,
 		Id:           file.Id,
 		Generated:    now,
@@ -629,6 +641,12 @@ func (tb *Torbox) RefreshDownloadLinks() error {
 }
 
 func (tb *Torbox) CheckFile(ctx context.Context, infohash, link string) error {
+	// TorBox usenet downloads are always available once cached; no download_present
+	// concept applies. Skip the torrent-specific check entirely.
+	if _, _, ok := ParseUsenetLink(link); ok {
+		return nil
+	}
+
 	tb.downloadPresentMu.Lock()
 	if !tb.downloadPresentLoaded {
 		if err := tb.loadDownloadPresent(); err != nil {

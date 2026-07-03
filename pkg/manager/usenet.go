@@ -7,14 +7,25 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sirrobot01/decypharr/internal/config"
+	debridCommon "github.com/sirrobot01/decypharr/pkg/debrid/common"
 	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
+	"github.com/sirrobot01/decypharr/pkg/debrid/providers/torbox"
 	"github.com/sirrobot01/decypharr/pkg/storage"
 	"github.com/sirrobot01/decypharr/pkg/usenet/parser"
 )
 
-// AddNewNZB processes an NZB file and stores it as a storage.Entry
+// AddNewNZB processes an NZB file and stores it as a storage.Entry.
+// When a TorBox Pro client is configured (and usenet_backend != "nntp"), the NZB is
+// submitted to TorBox's usenet API instead of streaming over NNTP. Falls back to
+// NNTP transparently on any TorBox error.
 func (m *Manager) AddNewNZB(ctx context.Context, req *ImportRequest) (string, error) {
+	// Attempt TorBox usenet API path first (Pro plan auto-detected).
+	if id, err := m.tryTorboxUsenet(ctx, req); id != "" || err != nil {
+		return id, err
+	}
+
 	if m.usenet == nil {
 		return "", fmt.Errorf("usenet not configured")
 	}
@@ -211,6 +222,148 @@ func (m *Manager) SpeedTest(ctx context.Context, req SpeedTestRequest) SpeedTest
 			Error:    "unknown protocol: " + req.Protocol,
 		}
 	}
+}
+
+// tryTorboxUsenet attempts to route the NZB through TorBox's usenet API.
+// Returns ("", nil) to signal "fall through to NNTP" when conditions are not met or on
+// recoverable failure. Returns a non-empty id on success, or a non-nil error on hard failure.
+func (m *Manager) tryTorboxUsenet(ctx context.Context, req *ImportRequest) (string, error) {
+	var (
+		nc         debridCommon.NZBClient
+		debridName string
+	)
+
+	m.clients.Range(func(name string, c debridCommon.Client) bool {
+		dc := c.Config()
+		// Respect explicit "nntp" override — skip this provider.
+		if dc.UsenetBackend == "nntp" {
+			return true
+		}
+		// Only TorBox implements NZBClient.
+		if _, ok := c.(*torbox.Torbox); !ok {
+			return true
+		}
+		candidate, ok := c.(debridCommon.NZBClient)
+		if !ok {
+			return true
+		}
+		if dc.UsenetBackend == "torbox" || candidate.SupportsUsenet() {
+			nc = candidate
+			debridName = name
+			return false // stop iteration
+		}
+		return true
+	})
+
+	if nc == nil {
+		return "", nil // no eligible TorBox Pro client found
+	}
+
+	return m.addNZBViaTorbox(ctx, req, nc, debridName)
+}
+
+// addNZBViaTorbox submits the NZB to TorBox's usenet API, waits for it to be cached,
+// then builds a storage.Entry and hands it to the normal processAction pipeline.
+func (m *Manager) addNZBViaTorbox(ctx context.Context, req *ImportRequest, nc debridCommon.NZBClient, debridName string) (string, error) {
+	m.logger.Info().Str("name", req.Name).Str("debrid", debridName).Msg("Submitting NZB to TorBox usenet API")
+
+	usenetID, err := nc.SubmitNZB(ctx, req.NZBContent, req.Name)
+	if err != nil {
+		m.logger.Warn().Err(err).Str("name", req.Name).Msg("TorBox usenet submit failed, falling back to NNTP")
+		return "", nil // recoverable — fall through
+	}
+
+	m.logger.Info().Str("name", req.Name).Str("usenet_id", usenetID).Msg("NZB submitted to TorBox usenet, waiting for cache")
+
+	dl, err := nc.WaitForUsenetCached(ctx, usenetID, m.usenetTimeout)
+	if err != nil {
+		m.logger.Warn().Err(err).Str("name", req.Name).Str("usenet_id", usenetID).
+			Msg("TorBox usenet cache wait failed, falling back to NNTP")
+		_ = nc.DeleteUsenetDownload(ctx, usenetID)
+		return "", nil // recoverable — fall through
+	}
+
+	cfg := config.Get()
+	entryID := uuid.New().String()
+	now := time.Now()
+
+	entry := &storage.Entry{
+		InfoHash:         entryID,
+		Name:             dl.Name,
+		OriginalFilename: dl.Name,
+		Size:             dl.Size,
+		Protocol:         config.ProtocolNZB,
+		Bytes:            dl.Size,
+		Category:         req.Arr.Name,
+		SavePath:         filepath.Join(req.DownloadFolder, req.Arr.Name),
+		Status:           debridTypes.TorrentStatusDownloaded,
+		State:            storage.EntryStatePausedUP,
+		Progress:         1.0,
+		Action:           req.Action,
+		CallbackURL:      req.CallBackUrl,
+		SkipMultiSeason:  req.SkipMultiSeason,
+		ActiveProvider:   debridName,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		AddedOn:          now,
+		Providers:        make(map[string]*storage.ProviderEntry),
+		Files:            make(map[string]*storage.File),
+		Tags:             []string{"torbox-usenet"},
+	}
+	entry.ContentPath = entry.DownloadPath()
+
+	providerEntry := &storage.ProviderEntry{
+		Provider:     debridName,
+		ID:           usenetID,
+		AddedAt:      now,
+		DownloadedAt: &now,
+		Status:       debridTypes.TorrentStatusDownloaded,
+		Progress:     1.0,
+		Files:        make(map[string]*storage.ProviderFile),
+	}
+
+	for _, f := range dl.Files {
+		fileName := filepath.Base(f.Name)
+		if err := cfg.IsFileAllowed(f.Name, f.Size); err != nil {
+			m.logger.Debug().Str("file", f.Name).Err(err).Msg("TorBox usenet: skipping disallowed file")
+			continue
+		}
+		link := torbox.BuildUsenetLink(usenetID, f.ID)
+		providerEntry.Files[fileName] = &storage.ProviderFile{
+			Id:   f.ID,
+			Link: link,
+			Path: f.Path,
+		}
+		entry.Files[fileName] = &storage.File{
+			Name:     fileName,
+			Size:     f.Size,
+			InfoHash: entryID,
+			AddedOn:  now,
+			Path:     f.Path,
+		}
+	}
+
+	if len(entry.Files) == 0 {
+		m.logger.Warn().Str("name", req.Name).Str("usenet_id", usenetID).
+			Msg("TorBox usenet: no eligible files after allowed_file_types filter, falling back to NNTP")
+		_ = nc.DeleteUsenetDownload(ctx, usenetID)
+		return "", nil // recoverable — fall through
+	}
+
+	entry.Providers[debridName] = providerEntry
+
+	if err := m.queue.Add(entry); err != nil {
+		return "", fmt.Errorf("failed to add TorBox usenet entry to queue: %w", err)
+	}
+
+	m.logger.Info().
+		Str("name", dl.Name).
+		Str("usenet_id", usenetID).
+		Int("files", len(entry.Files)).
+		Msg("TorBox usenet entry queued, processing action")
+
+	go m.processAction(entry)
+	return entryID, nil
 }
 
 func (m *Manager) syncNZBs(ctx context.Context) error {
