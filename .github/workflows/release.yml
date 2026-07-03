@@ -11,8 +11,8 @@ permissions:
   packages: write
 
 env:
-  REGISTRY: ghcr.io
-  REGISTRY_HUB: docker.io
+  REGISTRY: ghcr.io/flash1228/decypharr
+  REGISTRY_HUB: docker.io/flash1228/decypharr
   IMAGE_NAME: ${{ github.repository }}
   LDFLAGS_PKG: github.com/flash1228/decypharr/pkg/version  
 
