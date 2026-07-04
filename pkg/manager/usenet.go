@@ -305,6 +305,7 @@ func (m *Manager) addNZBViaTorbox(ctx context.Context, req *ImportRequest, nc de
 
 	nzbContent := req.NZBContent // capture before req may be reused
 	nzbName := req.Name
+	nzbCategory := req.Arr.Name
 
 	go func() {
 		defer m.processingEntries.Delete(entry.InfoHash)
@@ -321,12 +322,39 @@ func (m *Manager) addNZBViaTorbox(ctx context.Context, req *ImportRequest, nc de
 			m.logger.Info().Int("active", activeCount).Str("name", nzbName).Msg("TorBox usenet active download count")
 			if activeCount >= 6 { // TorBox Pro concurrent usenet download limit
 				m.torboxUsenetMu.Unlock()
-				m.logger.Warn().Int("active", activeCount).Str("name", nzbName).
-					Msg("TorBox usenet queue full — marking entry errored; Sonarr will retry later")
-				entry.State = storage.EntryStateError
-				entry.Status = debridTypes.TorrentStatusError
-				entry.UpdatedAt = time.Now()
-				_ = m.queue.Update(entry)
+				if m.usenet != nil {
+					// NNTP providers are configured — fall back to them rather than erroring.
+					m.logger.Info().Int("active", activeCount).Str("name", nzbName).
+						Msg("TorBox usenet slots full — falling back to NNTP providers")
+					entry.ActiveProvider = "usenet"
+					entry.Tags = []string{}
+					entry.Providers = make(map[string]*storage.ProviderEntry)
+					entry.UpdatedAt = time.Now()
+					_ = m.queue.Update(entry)
+					meta, groups, parseErr := m.usenet.Parse(bgCtx, nzbName, nzbContent, nzbCategory)
+					if parseErr != nil {
+						m.logger.Error().Err(parseErr).Str("name", nzbName).Msg("NNTP fallback: NZB parse failed")
+						entry.State = storage.EntryStateError
+						entry.Status = debridTypes.TorrentStatusError
+						entry.UpdatedAt = time.Now()
+						_ = m.queue.Update(entry)
+						return
+					}
+					if err := m.processNewNzb(entry, meta, groups); err != nil {
+						m.logger.Error().Err(err).Str("name", nzbName).Msg("NNTP fallback: processing failed")
+						entry.State = storage.EntryStateError
+						entry.Status = debridTypes.TorrentStatusError
+						entry.UpdatedAt = time.Now()
+						_ = m.queue.Update(entry)
+					}
+				} else {
+					m.logger.Warn().Int("active", activeCount).Str("name", nzbName).
+						Msg("TorBox usenet slots full and no NNTP configured — marking entry errored; Sonarr will retry later")
+					entry.State = storage.EntryStateError
+					entry.Status = debridTypes.TorrentStatusError
+					entry.UpdatedAt = time.Now()
+					_ = m.queue.Update(entry)
+				}
 				return
 			}
 		}
