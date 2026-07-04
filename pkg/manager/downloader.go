@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -393,8 +394,24 @@ func (d *Downloader) waitForSymlinkFilesReady(filePaths []string, timeout time.D
 			return nil
 		}
 
+		// If any file returned a permanent error, surface it immediately so
+		// processAction can call notifyArrFailedAndRemove without waiting for
+		// the full timeout.
+		for _, err := range pending {
+			var custErr *customerror.Error
+			if errors.As(err, &custErr) && custErr.IsPermanent() {
+				return err
+			}
+		}
+
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for symlink files to be ready: %d files still pending (%s)", len(pending), strings.Join(pendingSymlinkFileStatuses(pending, symlinkLogSampleSize), ", "))
+			timeoutErr := fmt.Errorf("timeout waiting for symlink files to be ready: %d files still pending (%s)", len(pending), strings.Join(pendingSymlinkFileStatuses(pending, symlinkLogSampleSize), ", "))
+			// NNTP probe timeouts are permanent — missing segments won't appear
+			// later. Surface as permanent so Sonarr blacklists the release.
+			if !primeCache {
+				return customerror.NewPermanentError(timeoutErr)
+			}
+			return timeoutErr
 		}
 
 		if shouldLogSymlinkWaitAttempt(attempt) {
@@ -451,6 +468,10 @@ func verifySymlinkFileReady(path string, primeCache bool) error {
 		// For NNTP entries, probe start and end to catch incomplete retention
 		// (missing segments) before notifying Sonarr. Reading the whole file
 		// would be too slow; two 64 KB reads cover the common failure modes.
+		// Start failure is returned as a plain error (may be transient — retry
+		// loop will keep trying). End failure is permanent: missing tail segments
+		// won't reappear, so wrap as a permanent error so processAction calls
+		// notifyArrFailedAndRemove and Sonarr blacklists the release immediately.
 		_, err = f.Read(buf)
 		if err != nil && err.Error() != "EOF" {
 			return fmt.Errorf("symlink target not readable (start): %w", err)
@@ -463,7 +484,9 @@ func verifySymlinkFileReady(path string, primeCache bool) error {
 			}
 			_, err = f.Read(buf)
 			if err != nil && err.Error() != "EOF" {
-				return fmt.Errorf("symlink target not readable (end): %w", err)
+				return customerror.NewPermanentError(
+					fmt.Errorf("NNTP file has incomplete retention (end segments unreadable): %w", err),
+				)
 			}
 		}
 	}
