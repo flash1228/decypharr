@@ -414,6 +414,12 @@ This fork ([TwistedRat/decypharr](https://github.com/TwistedRat/decypharr)) cont
 - **`fix: prime rclone VFS cache before notifying Sonarr of completed download`** (commit `4c509e7`)
   `verifySymlinkFileReady` only called `os.Open` + `f.Close()` without reading any data. rclone VFS is lazy — it fetches nothing from the CDN until bytes are actually read. Sonarr's MediaInfo would run immediately after the symlink check and race the CDN fetch, causing "Unable to determine if file is a sample" import failures. Fixed by reading 64 KB from the file to prime the VFS cache before `completeEntry` notifies the Arr.
 
+- **`fix(usenet): fall back to NNTP when TorBox Pro usenet slots are full`** (commit `2a1d4de`)
+  When all 6 TorBox Pro usenet slots are busy, the NZB entry was marked as error and Sonarr retried later — but only against TorBox, never checking NNTP providers. Fixed by re-routing the existing queue entry (preserving the ID Sonarr is tracking) through `processNewNzb` when `activeCount >= 6` and NNTP providers are configured. If no NNTP providers are configured the previous error behaviour is unchanged. Closes [#4](https://github.com/TwistedRat/decypharr/issues/4).
+
+- **`fix(nntp): skip CDN prime read for NNTP entries; probe start + end instead`** (commits `d859a90`, `2452c6f`)
+  The 64 KB prime read in `verifySymlinkFileReady` was designed for TorBox CDN-backed files where rclone VFS is lazy. NNTP files stream on demand — the prime read was both unnecessary and misleading (the first segment passing gave no signal about later segments). Changed to protocol-aware behaviour: CDN entries (TorBox torrent/usenet) keep the start-only prime read; NNTP entries read 64 KB from the **start and end** of the file. This catches the most common incomplete-retention failure (early segments present, later segments missing) before Sonarr is notified, without reading the whole file.
+
 ### Features
 
 - **`feat(torbox): TorBox Pro usenet API backend for NZB downloads`**
