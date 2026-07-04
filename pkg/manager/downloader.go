@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -429,24 +430,42 @@ func verifySymlinkFileReady(path string, primeCache bool) error {
 		return fmt.Errorf("symlink target is a directory")
 	}
 
-	if !primeCache {
-		return nil
-	}
-
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("symlink target cannot be opened: %w", err)
 	}
 	defer f.Close()
-	// Read a small header to prime the rclone VFS cache. Without this,
-	// rclone is lazy and fetches nothing until Sonarr's MediaInfo reads
-	// the file — which races the CDN fetch and causes "unable to determine
-	// if file is a sample" import failures. Only needed for CDN-backed
-	// (TorBox) entries — NNTP streams on demand and doesn't need priming.
+
 	buf := make([]byte, 64*1024)
-	_, err = f.Read(buf)
-	if err != nil && err.Error() != "EOF" {
-		return fmt.Errorf("symlink target not readable: %w", err)
+
+	if primeCache {
+		// Prime the rclone VFS lazy-fetch for CDN-backed (TorBox) entries.
+		// Without this, rclone fetches nothing until Sonarr's MediaInfo reads
+		// the file, racing the CDN and causing "unable to determine if file is
+		// a sample" import failures.
+		_, err = f.Read(buf)
+		if err != nil && err.Error() != "EOF" {
+			return fmt.Errorf("symlink target not readable (start): %w", err)
+		}
+	} else {
+		// For NNTP entries, probe start and end to catch incomplete retention
+		// (missing segments) before notifying Sonarr. Reading the whole file
+		// would be too slow; two 64 KB reads cover the common failure modes.
+		_, err = f.Read(buf)
+		if err != nil && err.Error() != "EOF" {
+			return fmt.Errorf("symlink target not readable (start): %w", err)
+		}
+		size := targetInfo.Size()
+		if size > int64(len(buf)) {
+			tailOffset := size - int64(len(buf))
+			if _, err = f.Seek(tailOffset, io.SeekStart); err != nil {
+				return fmt.Errorf("symlink target not seekable: %w", err)
+			}
+			_, err = f.Read(buf)
+			if err != nil && err.Error() != "EOF" {
+				return fmt.Errorf("symlink target not readable (end): %w", err)
+			}
+		}
 	}
 	return nil
 }
