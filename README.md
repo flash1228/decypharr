@@ -402,6 +402,18 @@ This fork ([TwistedRat/decypharr](https://github.com/TwistedRat/decypharr)) cont
 - **`Retry link validation on transient errors (429/502/503/504) with backoff`**
   Link validation retries with exponential backoff on transient HTTP errors rather than failing immediately.
 
+- **`fix(torbox): skip NZB entries in torrent sync to prevent deletion`** (commit `254d45b`)
+  `detectTorrentChanges` iterates all storage entries and removes any whose InfoHash is absent from TorBox's torrent API. TorBox usenet entries use UUID InfoHashes that never appear in the torrent API, so they were silently deleted from storage on every 10-minute sync cycle. Fixed by adding a `ProtocolNZB` guard so usenet entries are skipped by the torrent sync loop entirely.
+
+- **`fix(torbox): serialize concurrent NZB submissions to prevent slot race`** (commit `4e96be5`)
+  Multiple NZB goroutines all called `GetActiveUsenetCount` simultaneously before any submission had registered, all saw `active=0`, all bypassed the 6-slot limit, causing TorBox 500/504 errors. Fixed with `torboxUsenetMu sync.Mutex` wrapping the count-check + submit sequence so only one goroutine at a time can claim a slot.
+
+- **`fix(torbox): recover TorBox usenet entries interrupted mid-symlink on restart`** (commit `7d57e7a`)
+  Entries in state `pausedUP` + `IsComplete=false` (finalization complete, symlink goroutine killed by restart) were ignored by `processQueuedEntries` (only handles `downloading`) and `renotifyCompletedEntries` (only triggers Arr refresh). Added `recoverTorboxUsenetEntries()` called from `runInitialCalls` to re-fire `processAction` for these entries on startup.
+
+- **`fix: prime rclone VFS cache before notifying Sonarr of completed download`** (commit `4c509e7`)
+  `verifySymlinkFileReady` only called `os.Open` + `f.Close()` without reading any data. rclone VFS is lazy — it fetches nothing from the CDN until bytes are actually read. Sonarr's MediaInfo would run immediately after the symlink check and race the CDN fetch, causing "Unable to determine if file is a sample" import failures. Fixed by reading 64 KB from the file to prime the VFS cache before `completeEntry` notifies the Arr.
+
 ### Features
 
 - **`feat(torbox): TorBox Pro usenet API backend for NZB downloads`**
