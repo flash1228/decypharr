@@ -468,13 +468,22 @@ func verifySymlinkFileReady(path string, primeCache bool) error {
 		// For NNTP entries, probe start and end to catch incomplete retention
 		// (missing segments) before notifying Sonarr. Reading the whole file
 		// would be too slow; two 64 KB reads cover the common failure modes.
-		// Start failure is returned as a plain error (may be transient — retry
-		// loop will keep trying). End failure is permanent: missing tail segments
-		// won't reappear, so wrap as a permanent error so processAction calls
-		// notifyArrFailedAndRemove and Sonarr blacklists the release immediately.
-		_, err = f.Read(buf)
+		//
+		// We require that each read returns at least 1 byte. rclone VFS can
+		// return (0, nil) for a virtual file whose content hasn't been fetched
+		// yet — that passes an error-only check but means nothing was verified.
+		// A (0, nil) result is treated as transient so the retry loop tries again.
+		//
+		// Start failure: plain error — may be transient (NNTP connection hiccup).
+		// End failure: permanent error — missing tail segments won't reappear;
+		// processAction will call notifyArrFailedAndRemove so Sonarr blacklists
+		// the release and triggers a re-search immediately.
+		n, err := f.Read(buf)
 		if err != nil && err.Error() != "EOF" {
 			return fmt.Errorf("symlink target not readable (start): %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("symlink target returned 0 bytes at start (not yet available)")
 		}
 		size := targetInfo.Size()
 		if size > int64(len(buf)) {
@@ -482,10 +491,15 @@ func verifySymlinkFileReady(path string, primeCache bool) error {
 			if _, err = f.Seek(tailOffset, io.SeekStart); err != nil {
 				return fmt.Errorf("symlink target not seekable: %w", err)
 			}
-			_, err = f.Read(buf)
+			n, err = f.Read(buf)
 			if err != nil && err.Error() != "EOF" {
 				return customerror.NewPermanentError(
 					fmt.Errorf("NNTP file has incomplete retention (end segments unreadable): %w", err),
+				)
+			}
+			if n == 0 {
+				return customerror.NewPermanentError(
+					fmt.Errorf("NNTP file has incomplete retention (end segments returned 0 bytes)"),
 				)
 			}
 		}
