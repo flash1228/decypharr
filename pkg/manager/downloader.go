@@ -433,7 +433,17 @@ func verifySymlinkFileReady(path string) error {
 	if err != nil {
 		return fmt.Errorf("symlink target cannot be opened: %w", err)
 	}
-	return f.Close()
+	defer f.Close()
+	// Read a small header to prime the rclone VFS cache. Without this,
+	// rclone is lazy and fetches nothing until Sonarr's MediaInfo reads
+	// the file — which races the CDN fetch and causes "unable to determine
+	// if file is a sample" import failures.
+	buf := make([]byte, 64*1024)
+	_, err = f.Read(buf)
+	if err != nil && err.Error() != "EOF" {
+		return fmt.Errorf("symlink target not readable: %w", err)
+	}
+	return nil
 }
 
 func (d *Downloader) sleepUntilNextSymlinkAttempt(delay time.Duration, deadline time.Time) error {
