@@ -152,10 +152,11 @@ func (m *Manager) Stream(ctx context.Context, entry *storage.Entry, filename str
 
 	// Route based on protocol
 	if entry.Protocol == config.ProtocolNZB {
-		// TorBox usenet entries have ActiveProvider set and files with torbox-usenet:// links.
-		// Route them through the HTTP CDN path (same as torrents). NNTP NZB entries have
-		// no ActiveProvider and must go through the usenet streaming path.
-		if entry.ActiveProvider != "" {
+		// TorBox Pro Usenet entries have ActiveProvider set to a debrid name (e.g. "torbox")
+		// and files with CDN links — route through the HTTP streaming path like torrents.
+		// NNTP entries have ActiveProvider == "usenet" (the NNTP placement key) and must
+		// stream directly from NNTP servers via streamUsenet.
+		if entry.ActiveProvider != "" && entry.ActiveProvider != "usenet" {
 			return m.streamHTTP(ctx, entry, filename, start, end, writer, onReady)
 		}
 		return m.streamUsenet(ctx, entry, filename, start, end, writer, onReady)

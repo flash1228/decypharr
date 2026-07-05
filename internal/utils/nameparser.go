@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+const (
+	minNameYear = 1900
+	maxNameYear = 2099
+)
+
 // ParsedName holds structured information extracted from a raw torrent/release name.
 type ParsedName struct {
 	Title   string // Best English title candidate (may be empty)
@@ -73,7 +78,7 @@ func ParseTorrentName(raw string) ParsedName {
 
 	// ── Year ─────────────────────────────────────────────────────────────────
 	for _, m := range reYear.FindAllStringSubmatch(working, -1) {
-		if y := nameParseAtoi(m[1]); y >= 1900 && y <= 2099 {
+		if y := nameParseAtoi(m[1]); y >= minNameYear && y <= maxNameYear {
 			p.Year = m[1]
 			break
 		}

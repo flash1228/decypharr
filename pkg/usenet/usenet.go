@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -715,6 +716,14 @@ func (u *Usenet) Stream(ctx context.Context, nzoID, filename string, start, end 
 
 	// Mark file as failed if article not found (permanent error)
 	if err != nil && nntp.IsArticleNotFoundError(err) {
+		u.failedFiles.Store(key, err)
+		u.markNZBFileDeleted(nzoID, filename) // Persist so status survives restarts
+		return customerror.NewArticleNotFoundError(err)
+	}
+
+	// Yenc decode corruption is also permanent — the segment data on Usenet is
+	// corrupted and retrying will always produce the same result.
+	if err != nil && strings.Contains(err.Error(), "yenc decode failed") {
 		u.failedFiles.Store(key, err)
 		u.markNZBFileDeleted(nzoID, filename) // Persist so status survives restarts
 		return customerror.NewArticleNotFoundError(err)

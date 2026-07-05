@@ -2,7 +2,9 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -252,7 +254,7 @@ func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) erro
 	entry.IsDownloading = true
 	_ = d.manager.queue.Update(entry)
 
-	if err := d.waitForSymlinkFilesReady(filePaths, symlinkReadyTimeout); err != nil {
+	if err := d.waitForSymlinkFilesReady(filePaths, symlinkReadyTimeout, !entry.IsNZB()); err != nil {
 		return err
 	}
 
@@ -365,7 +367,7 @@ func (d *Downloader) createSymlinksWhenMountFilesAppear(entry *storage.Entry, fi
 	return filePaths, nil
 }
 
-func (d *Downloader) waitForSymlinkFilesReady(filePaths []string, timeout time.Duration) error {
+func (d *Downloader) waitForSymlinkFilesReady(filePaths []string, timeout time.Duration, primeCache bool) error {
 	if len(filePaths) == 0 {
 		return nil
 	}
@@ -382,7 +384,7 @@ func (d *Downloader) waitForSymlinkFilesReady(filePaths []string, timeout time.D
 	for len(pending) > 0 {
 		attempt++
 		for path := range pending {
-			if err := verifySymlinkFileReady(path); err != nil {
+			if err := verifySymlinkFileReady(path, primeCache); err != nil {
 				pending[path] = err
 				continue
 			}
@@ -392,8 +394,24 @@ func (d *Downloader) waitForSymlinkFilesReady(filePaths []string, timeout time.D
 			return nil
 		}
 
+		// If any file returned a permanent error, surface it immediately so
+		// processAction can call notifyArrFailedAndRemove without waiting for
+		// the full timeout.
+		for _, err := range pending {
+			var custErr *customerror.Error
+			if errors.As(err, &custErr) && custErr.IsPermanent() {
+				return err
+			}
+		}
+
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for symlink files to be ready: %d files still pending (%s)", len(pending), strings.Join(pendingSymlinkFileStatuses(pending, symlinkLogSampleSize), ", "))
+			timeoutErr := fmt.Errorf("timeout waiting for symlink files to be ready: %d files still pending (%s)", len(pending), strings.Join(pendingSymlinkFileStatuses(pending, symlinkLogSampleSize), ", "))
+			// NNTP probe timeouts are permanent — missing segments won't appear
+			// later. Surface as permanent so Sonarr blacklists the release.
+			if !primeCache {
+				return customerror.NewPermanentError(timeoutErr)
+			}
+			return timeoutErr
 		}
 
 		if shouldLogSymlinkWaitAttempt(attempt) {
@@ -412,7 +430,7 @@ func (d *Downloader) waitForSymlinkFilesReady(filePaths []string, timeout time.D
 	return nil
 }
 
-func verifySymlinkFileReady(path string) error {
+func verifySymlinkFileReady(path string, primeCache bool) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("symlink not available: %w", err)
@@ -433,7 +451,64 @@ func verifySymlinkFileReady(path string) error {
 	if err != nil {
 		return fmt.Errorf("symlink target cannot be opened: %w", err)
 	}
-	return f.Close()
+	defer f.Close()
+
+	buf := make([]byte, 64*1024)
+
+	if primeCache {
+		// Prime the rclone VFS lazy-fetch for CDN-backed (TorBox) entries.
+		// Without this, rclone fetches nothing until Sonarr's MediaInfo reads
+		// the file, racing the CDN and causing "unable to determine if file is
+		// a sample" import failures. Require n>0: rclone can return (0, nil)
+		// when the CDN fetch hasn't started yet, which must not pass as "ready".
+		n, err := f.Read(buf)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return fmt.Errorf("symlink target not readable (start): %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("symlink target returned 0 bytes (CDN fetch not started)")
+		}
+	} else {
+		// For NNTP entries, probe start and end to catch incomplete retention
+		// (missing segments) before notifying Sonarr. Reading the whole file
+		// would be too slow; two 64 KB reads cover the common failure modes.
+		//
+		// We require that each read returns at least 1 byte. rclone VFS can
+		// return (0, nil) for a virtual file whose content hasn't been fetched
+		// yet — that passes an error-only check but means nothing was verified.
+		// A (0, nil) result is treated as transient so the retry loop tries again.
+		//
+		// Start failure: plain error — may be transient (NNTP connection hiccup).
+		// End failure: permanent error — missing tail segments won't reappear;
+		// processAction will call notifyArrFailedAndRemove so Sonarr blacklists
+		// the release and triggers a re-search immediately.
+		n, err := f.Read(buf)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return fmt.Errorf("symlink target not readable (start): %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("symlink target returned 0 bytes at start (not yet available)")
+		}
+		size := targetInfo.Size()
+		if size > int64(len(buf)) {
+			tailOffset := size - int64(len(buf))
+			if _, err = f.Seek(tailOffset, io.SeekStart); err != nil {
+				return fmt.Errorf("symlink target not seekable: %w", err)
+			}
+			n, err = f.Read(buf)
+			if err != nil && !errors.Is(err, io.EOF) {
+				return customerror.NewPermanentError(
+					fmt.Errorf("NNTP file has incomplete retention (end segments unreadable): %w", err),
+				)
+			}
+			if n == 0 {
+				return customerror.NewPermanentError(
+					fmt.Errorf("NNTP file has incomplete retention (end segments returned 0 bytes)"),
+				)
+			}
+		}
+	}
+	return nil
 }
 
 func (d *Downloader) sleepUntilNextSymlinkAttempt(delay time.Duration, deadline time.Time) error {

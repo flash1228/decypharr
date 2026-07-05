@@ -94,7 +94,7 @@ func (m *Manager) AddNewTorrent(ctx context.Context, importReq *ImportRequest) e
 func (m *Manager) recoverTorboxUsenetEntries() {
 	pausedUP := m.queue.ListFilter("", config.ProtocolNZB, storage.EntryStatePausedUP, nil, "", false)
 	for _, entry := range pausedUP {
-		if entry.IsComplete || entry.ActiveProvider == "" {
+		if entry.IsComplete || entry.ActiveProvider == "" || entry.ActiveProvider == "usenet" {
 			continue
 		}
 		// Entry has TorBox usenet provider but processSymlink never finished.
@@ -137,8 +137,9 @@ func (m *Manager) processQueuedEntries() {
 				m.processingEntries.Delete(entry.InfoHash)
 			}
 		} else if entry.IsNZB() {
-			if entry.ActiveProvider == "" {
+			if entry.ActiveProvider == "" || entry.ActiveProvider == "usenet" {
 				// Standard NNTP NZB — process via usenet client.
+				// ActiveProvider == "usenet" is the NNTP placement key, not a debrid name.
 				go m.processQueuedNZB(entry)
 			} else {
 				// TorBox usenet NZB — resume polling if we have a stored usenet ID.

@@ -402,6 +402,42 @@ This fork ([TwistedRat/decypharr](https://github.com/TwistedRat/decypharr)) cont
 - **`Retry link validation on transient errors (429/502/503/504) with backoff`**
   Link validation retries with exponential backoff on transient HTTP errors rather than failing immediately.
 
+- **`fix(torbox): skip NZB entries in torrent sync to prevent deletion`** (commit `254d45b`)
+  `detectTorrentChanges` iterates all storage entries and removes any whose InfoHash is absent from TorBox's torrent API. TorBox usenet entries use UUID InfoHashes that never appear in the torrent API, so they were silently deleted from storage on every 10-minute sync cycle. Fixed by adding a `ProtocolNZB` guard so usenet entries are skipped by the torrent sync loop entirely.
+
+- **`fix(torbox): serialize concurrent NZB submissions to prevent slot race`** (commit `4e96be5`)
+  Multiple NZB goroutines all called `GetActiveUsenetCount` simultaneously before any submission had registered, all saw `active=0`, all bypassed the 6-slot limit, causing TorBox 500/504 errors. Fixed with `torboxUsenetMu sync.Mutex` wrapping the count-check + submit sequence so only one goroutine at a time can claim a slot.
+
+- **`fix(torbox): recover TorBox usenet entries interrupted mid-symlink on restart`** (commit `7d57e7a`)
+  Entries in state `pausedUP` + `IsComplete=false` (finalization complete, symlink goroutine killed by restart) were ignored by `processQueuedEntries` (only handles `downloading`) and `renotifyCompletedEntries` (only triggers Arr refresh). Added `recoverTorboxUsenetEntries()` called from `runInitialCalls` to re-fire `processAction` for these entries on startup.
+
+- **`fix: prime rclone VFS cache before notifying Sonarr of completed download`** (commit `4c509e7`)
+  `verifySymlinkFileReady` only called `os.Open` + `f.Close()` without reading any data. rclone VFS is lazy — it fetches nothing from the CDN until bytes are actually read. Sonarr's MediaInfo would run immediately after the symlink check and race the CDN fetch, causing "Unable to determine if file is a sample" import failures. Fixed by reading 64 KB from the file to prime the VFS cache before `completeEntry` notifies the Arr.
+
+- **`fix(usenet): fall back to NNTP when TorBox Pro usenet slots are full`** (commit `2a1d4de`)
+  When all 6 TorBox Pro usenet slots are busy, the NZB entry was marked as error and Sonarr retried later — but only against TorBox, never checking NNTP providers. Fixed by re-routing the existing queue entry (preserving the ID Sonarr is tracking) through `processNewNzb` when `activeCount >= 6` and NNTP providers are configured. If no NNTP providers are configured the previous error behaviour is unchanged. Closes [#4](https://github.com/TwistedRat/decypharr/issues/4).
+
+- **`fix(nntp): skip CDN prime read for NNTP entries; probe start + end instead`** (commits `d859a90`, `2452c6f`)
+  The 64 KB prime read in `verifySymlinkFileReady` was designed for TorBox CDN-backed files where rclone VFS is lazy. NNTP files stream on demand — the prime read was both unnecessary and misleading (the first segment passing gave no signal about later segments). Changed to protocol-aware behaviour: CDN entries (TorBox torrent/usenet) keep the start-only prime read; NNTP entries read 64 KB from the **start and end** of the file. This catches the most common incomplete-retention failure (early segments present, later segments missing) before Sonarr is notified, without reading the whole file. Closes [#5](https://github.com/TwistedRat/decypharr/issues/5).
+
+- **`fix(nntp): require n>0 from start/end probe reads; flag failures as permanent`** (commits `441b82f`, `59b15d2`)
+  Two additional gaps in the NNTP probe: (1) `f.Read()` returning `(0, nil)` — rclone VFS serving a virtual file not yet fetched — passed the error-only check as "ready" in ~1 ms. Now both start and end reads require `n > 0`. A zero-byte start read retries (transient); a zero-byte end read is a permanent failure. (2) Permanent probe errors now surface immediately from the retry loop without waiting for the full timeout, and NNTP probe timeouts are also wrapped as permanent. Both permanent paths call `notifyArrFailedAndRemove` so Sonarr/Radarr blacklists the release and re-searches instead of leaving the entry stuck as "Downloading".
+
+- **`fix(nntp): treat ActiveProvider=='usenet' as NNTP in queue recovery paths`** (commit `dc8ca1c`)
+  `processQueuedEntries` and `recoverTorboxUsenetEntries` both checked `ActiveProvider == ""` to identify NNTP entries. NNTP entries carry `ActiveProvider = "usenet"` (the NNTP placement key), so any NNTP entry surviving a restart was incorrectly routed into the TorBox usenet resume branch, producing `ERROR: TorBox usenet resume: provider client not found debrid=usenet`. Extended both guards to also treat `"usenet"` as the NNTP path, matching the same fix already in `stream.go` and `DeleteEntry`.
+
+- **`fix: code review hardening — EOF comparison, HTTP body leaks, redundant timeout`** (commit `22bf4d1`)
+  Four issues identified by structured code review and fixed atomically. (1) `verifySymlinkFileReady` used `err.Error() != "EOF"` string comparison which fails to match wrapped `io.EOF` or `io.ErrUnexpectedEOF` returned by rclone VFS — replaced with `errors.Is(err, io.EOF)`. (2) `GetActiveUsenetCount`, `GetUsenetDownload`, `fetchUsenetDownloadLink`, and `controlUsenetDownload` in the TorBox usenet client did not close the HTTP response body on non-2xx status paths, leaking connections from the transport pool under sustained API errors — added `defer resp.Body.Close()` after each `doGet`/`doPost` call. (3) `WaitForUsenetCached` accepted a redundant `timeout time.Duration` parameter alongside a context that already carried the same deadline — the explicit `time.Now().After(deadline)` check was dead code; removed the parameter from the interface, implementation, and both callers. (4) Year range magic constants `1900`/`2099` in `nameparser.go` replaced with named `minNameYear`/`maxNameYear`.
+
+- **`fix(stream): NNTP entries incorrectly routed to streamHTTP instead of streamUsenet`** (commit `f14799d`)
+  All NZB entries — including NNTP — have `ActiveProvider = "usenet"` set (the NNTP placement key). The `Stream()` routing check `ActiveProvider != ""` was treating this as a TorBox CDN entry and calling `streamHTTP`, which then failed with "client for provider usenet not found" because "usenet" is not a registered debrid client. This caused every NNTP webdav request to return `file_not_available after refresh`. Fixed by tightening the routing condition to `ActiveProvider != "" && ActiveProvider != "usenet"` — only actual debrid names (e.g. "torbox") route to HTTP streaming; "usenet" and empty-string both go to `streamUsenet`. This was the root cause of NZB downloads completing (symlinks created, probe passed) but Plex/rclone getting `file_not_available` for every file.
+
+- **`fix(nntp): treat yenc decode corruption as permanent failure`** (commit `3e77c63`)
+  A yenc segment size mismatch (e.g. rapidyenc `expected size X but got Y: data corruption detected`) means the segment data on Usenet is corrupted — retrying will always fail. Previously these errors fell through as plain retriable errors, causing rclone VFS to retry the WebDAV read every 60 seconds indefinitely. Now handled the same as article-not-found: stored in `failedFiles`, persisted via `markNZBFileDeleted`, and returned as `NewArticleNotFoundError` so rclone receives 410 Gone (no retry) and Sonarr/Radarr blacklists the release for re-search.
+
+- **`fix: TorBox CDN primeCache path also ignored read byte count`** (commit `c896e48`)
+  The same `(0, nil)` false-positive existed on the `primeCache=true` (TorBox CDN) path — `n` was discarded and only `err` was checked. Added the same `n > 0` guard. `verifySymlinkFileReady` is now the verified byte-read gate for both TorBox CDN and NNTP, which also closes the false-positive risk from `WaitForUsenetCached` (TorBox API-state-only check) and `PreCache` (non-blocking prefetch) identified in a full verification audit.
+
 ### Features
 
 - **`feat(torbox): TorBox Pro usenet API backend for NZB downloads`**

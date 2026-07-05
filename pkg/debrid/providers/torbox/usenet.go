@@ -84,6 +84,7 @@ func (tb *Torbox) GetActiveUsenetCount(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return 0, fmt.Errorf("torbox usenet mylist: HTTP %d", resp.StatusCode)
 	}
@@ -106,6 +107,7 @@ func (tb *Torbox) GetUsenetDownload(ctx context.Context, id string) (*usenetInfo
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("torbox usenet mylist: HTTP %d", resp.StatusCode)
 	}
@@ -115,11 +117,11 @@ func (tb *Torbox) GetUsenetDownload(ctx context.Context, id string) (*usenetInfo
 	return res.Data, nil
 }
 
-// WaitForUsenetCached polls until the usenet download is cached/finished or timeout elapses.
+// WaitForUsenetCached polls until the usenet download is cached/finished or ctx is cancelled.
 // onProgress is called on each poll with the current progress (0.0–1.0); may be nil.
 // Returns the download info (with file list) on success, an error on failure or timeout.
-func (tb *Torbox) WaitForUsenetCached(ctx context.Context, id string, timeout time.Duration, onProgress func(float64)) (*debridCommon.UsenetDownload, error) {
-	deadline := time.Now().Add(timeout)
+// The caller is responsible for setting a deadline on ctx (e.g. context.WithTimeout).
+func (tb *Torbox) WaitForUsenetCached(ctx context.Context, id string, onProgress func(float64)) (*debridCommon.UsenetDownload, error) {
 	const pollInterval = 5 * time.Second
 
 	for {
@@ -160,11 +162,6 @@ func (tb *Torbox) WaitForUsenetCached(ctx context.Context, id string, timeout ti
 			tb.logger.Debug().Str("usenet_id", id).Msg("TorBox usenet download queued (paused) — waiting for slot")
 		}
 
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("torbox usenet download %s did not complete within %s (state: %s, progress: %.1f%%)",
-				id, timeout, info.DownloadState, info.Progress*100)
-		}
-
 		tb.logger.Debug().
 			Str("usenet_id", id).
 			Str("state", info.DownloadState).
@@ -189,6 +186,7 @@ func (tb *Torbox) controlUsenetDownload(ctx context.Context, id string, operatio
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("torbox controlusenetdownload %s: HTTP %d", operation, resp.StatusCode)
 	}
@@ -212,6 +210,7 @@ func (tb *Torbox) fetchUsenetDownloadLink(acc *account.Account, usenetID, fileID
 	if err != nil {
 		return "", err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("torbox usenet requestdl: HTTP %d", resp.StatusCode)
 	}
