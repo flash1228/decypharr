@@ -134,6 +134,13 @@ func (m *Manager) Start(ctx context.Context) error {
 		// No --log-file, we capture output directly
 	}
 
+	if cfg.Rclone.Timeout != "" {
+		args = append(args, "--timeout", cfg.Rclone.Timeout)
+	}
+	if cfg.Rclone.ConnectTimeout != "" {
+		args = append(args, "--contimeout", cfg.Rclone.ConnectTimeout)
+	}
+
 	logLevel := cfg.Rclone.LogLevel
 	if logLevel != "" {
 		if !slices.Contains([]string{"DEBUG", "INFO", "NOTICE", "ERROR"}, logLevel) {
