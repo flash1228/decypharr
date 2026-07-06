@@ -195,18 +195,34 @@ func (m *Manager) StartWorker(ctx context.Context) error {
 		}
 	}
 
-	// Arr monitoring job
+	// Arr monitoring job — runs every 10s but skips the HTTP fetch when
+	// Decypharr is idle (no pending import jobs and no active download links).
+	// A 5-minute fallback always fires regardless of state to catch newly-grabbed
+	// torrents that arrive while the system appears idle.
 	if jd, err := utils.ConvertToJobDef("10s"); err != nil {
 		m.logger.Error().Err(err).Msg("Failed to convert arr monitoring interval to job definition")
 	} else {
-		// Schedule the job
 		if _, err := m.scheduler.NewJob(jd, gocron.NewTask(func() {
-			// Reset invalid download links map at midnight CET
+			if m.queue.IsEmpty() && m.GetTotalActiveDownloadLinks() == 0 {
+				return
+			}
 			m.arr.Monitor()
 		}), gocron.WithContext(ctx)); err != nil {
 			m.logger.Error().Err(err).Msg("Failed to create arr monitoring job")
 		} else {
 			m.logger.Debug().Msgf("Arr monitoring job scheduled for every %s", "10s")
+		}
+	}
+
+	if jd, err := utils.ConvertToJobDef("5m"); err != nil {
+		m.logger.Error().Err(err).Msg("Failed to convert arr monitoring fallback interval to job definition")
+	} else {
+		if _, err := m.scheduler.NewJob(jd, gocron.NewTask(func() {
+			m.arr.Monitor()
+		}), gocron.WithContext(ctx)); err != nil {
+			m.logger.Error().Err(err).Msg("Failed to create arr monitoring fallback job")
+		} else {
+			m.logger.Debug().Msg("Arr monitoring fallback job scheduled for every 5m")
 		}
 	}
 

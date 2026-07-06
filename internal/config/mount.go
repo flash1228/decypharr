@@ -34,8 +34,10 @@ type Rclone struct {
 	Umask string `json:"umask,omitempty"`
 
 	// Timeout settings
-	AttrTimeout  string `json:"attr_timeout,omitempty"`   // Attribute cache timeout (default 1s)
-	DirCacheTime string `json:"dir_cache_time,omitempty"` // Directory cache time (default 5m)
+	AttrTimeout    string `json:"attr_timeout,omitempty"`    // Attribute cache timeout (default 1s)
+	DirCacheTime   string `json:"dir_cache_time,omitempty"`  // Directory cache time (default 5m)
+	Timeout        string `json:"timeout,omitempty"`         // HTTP IO idle timeout (default 5m); shorter values prevent hung FUSE reads
+	ConnectTimeout string `json:"connect_timeout,omitempty"` // HTTP connect timeout (default 1m)
 
 	// Performance settings
 	NoModTime  bool `json:"no_modtime,omitempty"`  // Don't read/write modification time
