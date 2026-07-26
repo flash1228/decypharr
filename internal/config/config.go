@@ -146,6 +146,7 @@ type Config struct {
 	AllowSamples       bool     `json:"allow_samples,omitempty"`
 	MinFileSize        string   `json:"min_file_size,omitempty"`
 	MaxFileSize        string   `json:"max_file_size,omitempty"`
+	BdMainFileOnly     *bool    `json:"bd_main_file_only,omitempty"` // Select only the largest .m2ts in Blu-ray rips (default: true)
 	RemoveStalledAfter string   `json:"remove_stalled_after,omitzero"`
 	EnableWebdavAuth   bool     `json:"enable_webdav_auth,omitempty"`
 	UseAuth            bool     `json:"use_auth,omitempty"`
