@@ -51,6 +51,8 @@ services:
 > via [ElfHosted](https://store.elfhosted.com/product/decypharr/?utm_source=github&utm_medium=readme&utm_campaign=decypharr-readme),
 > preconfigured alongside Sonarr/Radarr to route requests to your debrid provider (7-day trial).
 
+A complete annotated example configuration is available at [`docs/config.example.json`](docs/config.example.json). Copy it to `/app/config.json`, replace every `YOUR_*` placeholder with real values, and remove any sections you don't need.
+
 ---
 
 ## Configuration Reference
