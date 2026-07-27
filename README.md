@@ -53,6 +53,8 @@ services:
 
 A complete annotated example configuration is available at [`docs/config.example.json`](docs/config.example.json). Copy it to `/app/config.json`, replace every `YOUR_*` placeholder with real values, and remove any sections you don't need.
 
+For a full end-to-end deployment walkthrough — LXC container creation, iGPU passthrough, Docker setup, the complete Arr stack, and the `start.sh` / `stop.sh` scripts — see [`docs/lxc-setup-guide.md`](docs/lxc-setup-guide.md).
+
 ---
 
 ## Configuration Reference
