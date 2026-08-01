@@ -454,6 +454,24 @@ func (u *Usenet) checkFileAvailability(ctx context.Context, file *storage.NZBFil
 		return customerror.UsenetSegmentMissingError
 	}
 
+	// STAT passed — but some NNTP servers return STAT OK for articles whose body
+	// has been deleted (the article ID remains in the index after expiry). Verify
+	// the first segment is actually retrievable using HEAD, which requires the
+	// server to locate the article content, not just the index entry.
+	if len(file.Segments) > 0 {
+		if err := u.nntp.HeadCheck(ctx, file.Segments[0].MessageID); err != nil {
+			if nntp.IsArticleNotFoundError(err) {
+				u.logger.Warn().
+					Str("file", file.Name).
+					Str("segment", file.Segments[0].MessageID).
+					Msg("HEAD check returned 430: article body expired despite STAT OK")
+				return customerror.UsenetSegmentMissingError
+			}
+			// Connection or transient error — don't fail the probe.
+			u.logger.Debug().Err(err).Str("file", file.Name).Msg("HEAD check non-fatal error, skipping")
+		}
+	}
+
 	return nil
 }
 

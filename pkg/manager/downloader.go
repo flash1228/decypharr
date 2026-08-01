@@ -226,6 +226,18 @@ func (d *Downloader) chownPath(path string) {
 // processSymlink creates symlinks for torrent files
 func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) error {
 	files := entry.GetActiveFiles()
+
+	if d.manager.config.GetBdMainFileOnly() {
+		if filtered, ok := storage.SelectMainM2tsFile(files); ok {
+			main := filtered[len(filtered)-1]
+			d.logger.Info().Str("entry", entry.Name).
+				Str("main_file", main.Name).
+				Int64("size_bytes", main.Size).
+				Msgf("Blu-ray rip: selected main .m2ts from %d candidates", len(files)-len(filtered)+1)
+			files = filtered
+		}
+	}
+
 	torrentSymlinkPath := entry.DownloadPath()
 
 	// Guard: if no files passed the allowed_file_types filter, bail out before
@@ -612,6 +624,18 @@ func (d *Downloader) processTorrentDownload(entry *storage.Entry) (retErr error)
 	}()
 
 	files := entry.GetActiveFiles()
+
+	if d.manager.config.GetBdMainFileOnly() {
+		if filtered, ok := storage.SelectMainM2tsFile(files); ok {
+			main := filtered[len(filtered)-1]
+			d.logger.Info().Str("entry", entry.Name).
+				Str("main_file", main.Name).
+				Int64("size_bytes", main.Size).
+				Msgf("Blu-ray rip: selected main .m2ts from %d candidates", len(files)-len(filtered)+1)
+			files = filtered
+		}
+	}
+
 	d.logger.Info().Msgf("Downloading %d files...", len(files))
 
 	totalSize := int64(0)

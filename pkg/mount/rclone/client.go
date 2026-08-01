@@ -168,6 +168,12 @@ func (m *Manager) performMount(ctx context.Context) error {
 		}
 	}
 
+	if cfg.Rclone.DaemonTimeout != "" {
+		if daemonTimeout, err := utils.ParseDuration(cfg.Rclone.DaemonTimeout); err == nil {
+			mountOpt["DaemonTimeout"] = daemonTimeout.String()
+		}
+	}
+
 	mountArgs["vfsOpt"] = vfsOpt
 	mountArgs["mountOpt"] = mountOpt
 

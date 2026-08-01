@@ -1,0 +1,148 @@
+{
+  "bind_address": "0.0.0.0",
+  "port": "8282",
+  "url_base": "/",
+  "log_level": "INFO",
+
+  "download_folder": "/mnt/symlinks",
+  "default_download_action": "symlink",
+  "folder_naming": "original_no_ext",
+  "categories": ["sonarr", "radarr"],
+
+  "refresh_interval": "30s",
+  "retries": 3,
+  "remove_stalled_after": "10m",
+  "max_downloads": 0,
+
+  "allowed_file_types": ["mkv", "mp4", "avi", "m2ts", "ts"],
+  "allow_samples": false,
+  "min_file_size": "50MB",
+  "bd_main_file_only": true,
+  "prefer_ascii_name": true,
+
+  "download_uid": 1000,
+  "download_gid": 1000,
+
+  "debrids": [
+    {
+      "provider": "torbox",
+      "name": "torbox",
+      "api_key": "YOUR_TORBOX_API_KEY",
+      "rate_limit": "200/minute",
+      "repair_rate_limit": "60/minute",
+      "download_rate_limit": "8/minute",
+      "unpack_rar": false,
+      "minimum_free_slot": 2,
+      "torrents_refresh_interval": "10m",
+      "download_links_refresh_interval": "30m",
+      "workers": 100,
+      "auto_expire_links_after": "12h",
+      "usenet_backend": "nntp"
+    },
+    {
+      "provider": "realdebrid",
+      "name": "realdebrid",
+      "api_key": "YOUR_REALDEBRID_API_KEY",
+      "rate_limit": "200/minute",
+      "repair_rate_limit": "60/minute",
+      "minimum_free_slot": 1,
+      "torrents_refresh_interval": "10m",
+      "download_links_refresh_interval": "30m",
+      "workers": 100,
+      "auto_expire_links_after": "12h"
+    }
+  ],
+
+  "arrs": [
+    {
+      "name": "sonarr",
+      "host": "http://sonarr:8989",
+      "token": "YOUR_SONARR_API_KEY",
+      "download_uncached": false,
+      "cleanup": true
+    },
+    {
+      "name": "radarr",
+      "host": "http://radarr:7878",
+      "token": "YOUR_RADARR_API_KEY",
+      "download_uncached": false,
+      "cleanup": true
+    }
+  ],
+
+  "usenet": {
+    "providers": [
+      {
+        "host": "news.provider1.com",
+        "port": 563,
+        "username": "YOUR_NNTP_USERNAME",
+        "password": "YOUR_NNTP_PASSWORD",
+        "backbone": "Provider1Backbone",
+        "max_connections": 15,
+        "ssl": true,
+        "priority": 1
+      },
+      {
+        "host": "news.provider2.com",
+        "port": 563,
+        "username": "YOUR_NNTP_USERNAME",
+        "password": "YOUR_NNTP_PASSWORD",
+        "backbone": "Provider2Backbone",
+        "max_connections": 10,
+        "ssl": true,
+        "priority": 1
+      }
+    ],
+    "max_connections": 15,
+    "read_ahead": "16MB",
+    "processing_timeout": "10m",
+    "availability_sample_percent": 10,
+    "max_concurrent_nzb": 2,
+    "disk_buffer_path": "/mnt/cache/decypharr-streams"
+  },
+
+  "mount": {
+    "type": "rclone",
+    "mount_path": "/mnt/decypharr",
+    "rclone": {
+      "port": "5572",
+      "cache_dir": "/mnt/cache/decypharr-cache",
+      "vfs_cache_mode": "full",
+      "vfs_cache_max_age": "12h",
+      "vfs_cache_max_size": "40G",
+      "vfs_cache_poll_interval": "1m",
+      "vfs_read_chunk_size": "256M",
+      "vfs_read_chunk_size_limit": "1G",
+      "vfs_read_ahead": "512M",
+      "vfs_fast_fingerprint": true,
+      "buffer_size": "32M",
+      "async_read": true,
+      "transfers": 2,
+      "uid": 1000,
+      "gid": 1000,
+      "attr_timeout": "1h",
+      "dir_cache_time": "5m",
+      "timeout": "5m",
+      "connect_timeout": "30s",
+      "daemon_timeout": "30s",
+      "log_level": "INFO"
+    }
+  },
+
+  "repair": {
+    "enabled": true,
+    "source": "arr",
+    "schedule": "0 3 * * *",
+    "workers": 5,
+    "nntp_connection_percent": 20,
+    "strategy": "per_entry",
+    "recheck_interval": "168h",
+    "auto_repair": true
+  },
+
+  "notifications": {
+    "enabled": false,
+    "webhook_url": "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN",
+    "events": ["download_failed", "repair_failed"]
+  }
+}

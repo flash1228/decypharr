@@ -142,9 +142,12 @@ func (p *NZBParser) Parse(ctx context.Context, filename string, content []byte) 
 		Password: raw.Meta["password"],
 	}
 	// Group files by base Name and type
-	fileGroups := p.groupFiles(ctx, raw.Files)
+	fileGroups, groupErr := p.groupFiles(ctx, raw.Files)
 
 	if len(fileGroups) == 0 {
+		if groupErr != nil {
+			return nil, nil, fmt.Errorf("NNTP fetch failed for all files in NZB (articles may be expired or unavailable): %w", groupErr)
+		}
 		return nil, nil, fmt.Errorf("no valid file groups found in NZB")
 	}
 
@@ -236,7 +239,7 @@ func (p *NZBParser) Process(ctx context.Context, nzb *storage.NZB, groups map[st
 	return nzb, nil
 }
 
-func (p *NZBParser) groupFiles(ctx context.Context, files nzbparser.NzbFiles) map[string]*FileGroup {
+func (p *NZBParser) groupFiles(ctx context.Context, files nzbparser.NzbFiles) (map[string]*FileGroup, error) {
 	// Assign XML document order as Number for files with uniform Number values.
 	// This preserves upload order for obfuscated archives where the subject
 	// line doesn't contain file number patterns like [X/Y].
@@ -281,10 +284,14 @@ func (p *NZBParser) groupFiles(ctx context.Context, files nzbparser.NzbFiles) ma
 		}
 	}
 
-	unknownResults := p.batchDetectContentTypes(ctx, unknownFiles)
+	unknownResults, fetchErr := p.batchDetectContentTypes(ctx, unknownFiles)
 
-	// Add unknown results
-	allFiles = append(allFiles, unknownResults...)
+	// Only include files whose type was successfully identified.
+	for _, r := range unknownResults {
+		if r.fileType != storage.NZBFileTypeUnknown {
+			allFiles = append(allFiles, r)
+		}
+	}
 
 	groups := p.groupProcessedFiles(allFiles)
 
@@ -292,7 +299,7 @@ func (p *NZBParser) groupFiles(ctx context.Context, files nzbparser.NzbFiles) ma
 	// each RAR volume gets its own group. This merges them back together.
 	groups = p.mergeObfuscatedRarGroups(groups)
 
-	return groups
+	return groups, fetchErr
 }
 
 // mergeObfuscatedRarGroups detects and merges RAR FileGroups that likely belong
@@ -366,43 +373,62 @@ func (p *NZBParser) mergeObfuscatedRarGroups(groups map[string]*FileGroup) map[s
 	return groups
 }
 
-// Batch process unknown files in parallel
-func (p *NZBParser) batchDetectContentTypes(ctx context.Context, unknownFiles []nzbparser.NzbFile) []contentResult {
+// Batch process unknown files in parallel.
+// Returns the detected results and the first NNTP fetch error encountered (if any).
+// Files whose type remains unknown due to an NNTP error are included in the results
+// so the caller can distinguish "no recognisable content" from "NNTP unreachable".
+func (p *NZBParser) batchDetectContentTypes(ctx context.Context, unknownFiles []nzbparser.NzbFile) ([]contentResult, error) {
 	if len(unknownFiles) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Use up to maxConcurrent workers — same budget as the rest of the parser.
 	workers := min(len(unknownFiles), p.maxConcurrent)
 
-	mapper := iter.Mapper[nzbparser.NzbFile, contentResult]{
-		MaxGoroutines: workers, // limit concurrency
+	type detectionResult struct {
+		content contentResult
+		err     error
 	}
 
-	mapped := mapper.Map(unknownFiles, func(f *nzbparser.NzbFile) contentResult {
-		// You can still pass ctx through to your inner function.
+	mapper := iter.Mapper[nzbparser.NzbFile, detectionResult]{
+		MaxGoroutines: workers,
+	}
+
+	mapped := mapper.Map(unknownFiles, func(f *nzbparser.NzbFile) detectionResult {
 		detectedType, actualFilename, err := p.detectFileTypeByContent(ctx, *f)
 		if err != nil {
-			p.logger.Trace().
+			p.logger.Warn().
 				Err(err).
 				Str("file", f.Filename).
-				Msg("Failed to detect file type by content")
+				Msg("Failed to detect file type by content — NNTP fetch error")
 		}
-
-		return contentResult{
-			file:           *f,
-			fileType:       detectedType,
-			actualFilename: actualFilename,
+		return detectionResult{
+			content: contentResult{
+				file:           *f,
+				fileType:       detectedType,
+				actualFilename: actualFilename,
+			},
+			err: err,
 		}
 	})
 
 	processed := make([]contentResult, 0, len(mapped))
+	var firstFetchErr error
 	for _, r := range mapped {
-		if r.fileType != storage.NZBFileTypeUnknown {
-			processed = append(processed, r)
+		if r.err != nil {
+			if firstFetchErr == nil {
+				firstFetchErr = r.err
+			}
+			// Don't discard: include with Unknown type so groupFiles knows
+			// these files existed but couldn't be typed due to NNTP error.
+			processed = append(processed, r.content)
+			continue
+		}
+		if r.content.fileType != storage.NZBFileTypeUnknown {
+			processed = append(processed, r.content)
 		}
 	}
-	return processed
+	return processed, firstFetchErr
 }
 
 // Group already processed files (fast)

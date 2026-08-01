@@ -51,6 +51,10 @@ services:
 > via [ElfHosted](https://store.elfhosted.com/product/decypharr/?utm_source=github&utm_medium=readme&utm_campaign=decypharr-readme),
 > preconfigured alongside Sonarr/Radarr to route requests to your debrid provider (7-day trial).
 
+A complete annotated example configuration is available at [`docs/config.example.json`](docs/config.example.json). Copy it to `/app/config.json`, replace every `YOUR_*` placeholder with real values, and remove any sections you don't need.
+
+For a full end-to-end deployment walkthrough — LXC container creation, iGPU passthrough, Docker setup, the complete Arr stack, and the `start.sh` / `stop.sh` scripts — see [`docs/lxc-setup-guide.md`](docs/lxc-setup-guide.md).
+
 ---
 
 ## Configuration Reference
@@ -64,19 +68,31 @@ Decypharr is configured via a single `config.json` file placed in the `/app` vol
 | `bind_address` | string | `"0.0.0.0"` | Address to listen on |
 | `port` | string | `"8282"` | HTTP port |
 | `url_base` | string | `"/"` | URL prefix (useful behind a reverse proxy) |
+| `app_url` | string | — | External base URL (e.g. `"https://decypharr.example.com"`) — used in callbacks and notifications |
 | `log_level` | string | `"INFO"` | Log verbosity: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `download_folder` | string | — | Root folder where symlinks/downloads are placed |
-| `default_download_action` | string | `"symlink"` | `"symlink"` or `"download"` |
-| `folder_naming` | string | `"original_no_ext"` | Naming scheme for download folders |
-| `categories` | array | — | Arr category names to handle (e.g. `["sonarr","radarr"]`) |
-| `refresh_interval` | string | `"60s"` | How often to poll debrid for completed items |
-| `symlinkReadyTimeout` | int | `600` | Seconds to wait for a symlink to become readable before failing |
-| `retries` | int | `3` | Number of retries for failed debrid requests |
-| `remove_stalled_after` | string | `"10m"` | Remove a download from the queue if stalled this long |
+| `default_download_action` | string | `"symlink"` | `"symlink"`, `"download"`, `"strm"`, or `"none"` |
+| `folder_naming` | string | `"original_no_ext"` | Naming scheme: `"filename"`, `"original"`, `"filename_no_ext"`, `"original_no_ext"`, `"infohash"` |
+| `categories` | array | `["sonarr","radarr"]` | Arr category names to handle |
+| `refresh_interval` | string | `"30s"` | How often to poll debrid providers for completed items |
+| `retries` | int | `3` | Number of retries for failed debrid API requests |
+| `remove_stalled_after` | string | — | Remove a download from the queue if stalled this long (e.g. `"10m"`) |
 | `skip_pre_cache` | bool | `false` | Skip pre-caching content on the debrid side |
+| `max_downloads` | int | `0` | Maximum concurrent active downloads (0 = unlimited) |
+| `skip_multi_season` | bool | `false` | Skip multi-season torrent packs |
+| `always_rm_tracker_urls` | bool | `false` | Always strip tracker URLs from magnet links |
 | `allowed_file_types` | array | (media extensions) | Whitelist of file extensions to process |
-| `download_uid` | int | `null` | UID to set on created download dirs and symlinks (`-1` = no change) |
-| `download_gid` | int | `null` | GID to set on created download dirs and symlinks (`-1` = no change) |
+| `allow_samples` | bool | `false` | Include sample/trailer/extras files (normally filtered out) |
+| `min_file_size` | string | — | Minimum file size to process (e.g. `"100MB"`) |
+| `max_file_size` | string | — | Maximum file size to process (e.g. `"100GB"`) |
+| `bd_main_file_only` | bool | `true` | For Blu-ray rips with multiple `.m2ts` files, only expose the largest (main feature). Prevents unnecessary probing of secondary streams by Plex/rclone |
+| `prefer_ascii_name` | bool | `true` | Extract ASCII title from mixed-script release names (e.g. CJK/Cyrillic). Disable only if your library is intentionally non-Western |
+| `download_uid` | int | — | UID to set on created download dirs and symlinks (`-1` = no change). Typical Docker/LXC setup: `1000` |
+| `download_gid` | int | — | GID to set on created download dirs and symlinks (`-1` = no change). Typical Docker/LXC setup: `1000` |
+| `use_auth` | bool | `false` | Enable built-in username/password authentication for the web UI and API |
+| `disable_webdav` | bool | `false` | Disable the built-in WebDAV server |
+| `nzb_user_agent` | string | — | Custom User-Agent header for downloading NZB files |
+| `skip_auto_move` | bool | `false` | Skip automatic file moving after download |
 
 ### `debrids[]` — Debrid provider configuration
 
@@ -89,26 +105,23 @@ Each entry in the `debrids` array configures one provider. Multiple providers ar
       "provider": "torbox",
       "name": "torbox",
       "api_key": "YOUR_TORBOX_API_KEY",
-      "download_api_keys": ["YOUR_TORBOX_API_KEY"],
       "rate_limit": "200/minute",
       "repair_rate_limit": "60/minute",
       "download_rate_limit": "8/minute",
       "unpack_rar": true,
-      "skip_pre_cache": true,
       "minimum_free_slot": 2,
       "torrents_refresh_interval": "10m",
       "download_links_refresh_interval": "30m",
       "workers": 100,
-      "auto_expire_links_after": "2h"
+      "auto_expire_links_after": "2h",
+      "usenet_backend": "auto"
     },
     {
       "provider": "realdebrid",
       "name": "realdebrid",
       "api_key": "YOUR_REALDEBRID_API_KEY",
-      "download_api_keys": ["YOUR_REALDEBRID_API_KEY"],
       "rate_limit": "200/minute",
       "repair_rate_limit": "60/minute",
-      "skip_pre_cache": true,
       "minimum_free_slot": 1,
       "torrents_refresh_interval": "10m",
       "download_links_refresh_interval": "30m",
@@ -123,18 +136,22 @@ Each entry in the `debrids` array configures one provider. Multiple providers ar
 |---|---|
 | `provider` | Provider ID: `torbox`, `realdebrid`, `debridlink`, `alldebrid` |
 | `name` | Display name (used in logs and Arr client label) |
-| `api_key` | Your debrid API key |
-| `download_api_keys` | Keys used for download link generation (usually same as `api_key`) |
+| `api_key` | Your debrid API key. Also used for download link generation unless `download_api_keys` is set |
+| `download_api_keys` | Override keys for download link generation. Omit to reuse `api_key` (the default) |
 | `rate_limit` | API request rate limit (e.g. `"200/minute"`) |
 | `repair_rate_limit` | Rate limit used during repair sweeps |
 | `download_rate_limit` | Rate limit for download link fetches |
 | `unpack_rar` | Ask the provider to extract RAR archives (TorBox only) |
-| `skip_pre_cache` | Skip pre-caching — set `true` if you only want cached torrents |
+| `download_uncached` | Allow adding uncached torrents (will queue until the provider caches them) |
 | `minimum_free_slot` | Minimum free active-torrent slots to keep available |
+| `limit` | Maximum total torrents allowed on this provider (0 = unlimited) |
 | `torrents_refresh_interval` | How often to refresh the torrent list from the provider |
 | `download_links_refresh_interval` | How often to refresh expiring download links |
 | `workers` | Concurrent worker goroutines for this provider |
-| `auto_expire_links_after` | Refresh download links before they expire. Should be less than or equal to `vfs_cache_max_age` in the rclone mount config |
+| `auto_expire_links_after` | Refresh download links before they expire. Should be ≤ `vfs_cache_max_age` |
+| `proxy` | HTTP proxy URL for all API calls to this provider |
+| `user_agent` | Custom User-Agent header for API calls to this provider |
+| `usenet_backend` | NZB routing for this debrid provider: `"auto"` (default — use TorBox usenet API when Pro plan detected, fall back to NNTP), `"torbox"` (always use TorBox API, fails if not Pro), `"nntp"` (always use configured NNTP providers, skip TorBox API). TorBox-only field |
 
 ### `arrs[]` — Arr application configuration
 
@@ -146,7 +163,8 @@ Each entry in the `debrids` array configures one provider. Multiple providers ar
       "host": "http://sonarr:8989",
       "token": "YOUR_SONARR_API_KEY",
       "download_uncached": false,
-      "cleanup": true
+      "cleanup": true,
+      "skip_repair": false
     },
     {
       "name": "radarr",
@@ -166,22 +184,36 @@ Each entry in the `debrids` array configures one provider. Multiple providers ar
 | `token` | Arr API key |
 | `download_uncached` | Allow adding uncached torrents (will queue until the provider caches them) |
 | `cleanup` | Automatically remove completed items from the download queue |
+| `skip_repair` | Exclude this Arr's items from repair sweeps |
+| `selected_debrid` | Pin this Arr to a specific debrid provider by name (omit to use all configured providers) |
 
 ### `usenet` — Usenet / NNTP configuration
 
 Required if you want to use decypharr as a SABnzbd-compatible download client for NZB files.
+
+Multiple NNTP providers are supported simultaneously. Providers with the same `backbone` value share article-availability state — if one backbone returns 430 (article not found), all providers on that backbone are skipped for that article and the next distinct backbone is tried. Set `priority: 1` on all providers for round-robin load balancing; use higher priority numbers for fallback-only providers.
 
 ```json
 {
   "usenet": {
     "providers": [
       {
-        "host": "news.example.com",
+        "host": "news.provider1.com",
         "port": 563,
         "username": "your-username",
         "password": "your-password",
-        "backbone": "ProviderName",
+        "backbone": "ProviderBackbone",
         "max_connections": 15,
+        "ssl": true,
+        "priority": 1
+      },
+      {
+        "host": "news.provider2.com",
+        "port": 563,
+        "username": "your-username",
+        "password": "your-password",
+        "backbone": "AnotherBackbone",
+        "max_connections": 10,
         "ssl": true,
         "priority": 1
       }
@@ -191,7 +223,8 @@ Required if you want to use decypharr as a SABnzbd-compatible download client fo
     "processing_timeout": "15m",
     "availability_sample_percent": 5,
     "max_concurrent_nzb": 2,
-    "disk_buffer_path": "/mnt/cache/decypharr-streams"
+    "disk_buffer_path": "/mnt/cache/decypharr-streams",
+    "skip_repair": false
   }
 }
 ```
@@ -201,20 +234,32 @@ Required if you want to use decypharr as a SABnzbd-compatible download client fo
 | `providers[].host` | NNTP server hostname |
 | `providers[].port` | NNTP port (563 for SSL, 119 for plain) |
 | `providers[].username` / `password` | NNTP credentials |
-| `providers[].backbone` | Label for logging/identification |
-| `providers[].max_connections` | Max simultaneous connections to this server |
+| `providers[].backbone` | Backbone identifier for failover grouping. Providers sharing the same backbone are treated as redundant — 430 on one excludes the entire backbone before trying the next |
+| `providers[].max_connections` | Max simultaneous connections to this server (default: 20) |
 | `providers[].ssl` | Use SSL/TLS |
-| `providers[].priority` | Lower number = higher priority |
-| `max_connections` | Global connection cap across all providers |
-| `read_ahead` | Buffer size for streaming NZB segments |
-| `processing_timeout` | Abort a stuck NZB after this duration |
-| `availability_sample_percent` | Percentage of segments to probe for availability check |
-| `max_concurrent_nzb` | Max NZB downloads running simultaneously |
-| `disk_buffer_path` | Temporary disk buffer path for NZB stream processing |
+| `providers[].priority` | Failover priority — lower number = higher priority. Providers at the same priority level are load-balanced |
+| `max_connections` | Per-file connection cap across all providers (default: 15) |
+| `read_ahead` | Bytes to prefetch ahead of current read position (default: `"16MB"`) |
+| `processing_timeout` | Abort a stuck NZB after this duration (default: `"10m"`) |
+| `availability_sample_percent` | Percentage of segments to probe for availability check (1–100, default: 10) |
+| `max_concurrent_nzb` | Max NZBs processed in parallel (default: 2) |
+| `disk_buffer_path` | Temporary disk buffer path for NZB stream data |
+| `skip_repair` | Exclude NNTP entries from repair sweeps |
 
 **Note:** Decypharr implements the SABnzbd protocol natively. In Sonarr/Radarr, add it as a SABnzbd download client pointing at `http://<decypharr>:8282/sabnzbd`. No separate SABnzbd instance is needed.
 
-### `mount` — rclone VFS mount configuration
+### `mount` — Mount configuration
+
+Decypharr supports four mount types set via `mount.type`:
+
+| Type | Description |
+|---|---|
+| `rclone` | Built-in rclone VFS mount (recommended for most setups) |
+| `dfs` | Built-in DFS (Distributed Filesystem) mount — alternative to rclone |
+| `external_rclone` | Connect to an already-running rclone RC instance |
+| `none` | No mount — use only if you manage the debrid filesystem externally |
+
+#### `mount.type = "rclone"` (recommended)
 
 ```json
 {
@@ -226,19 +271,20 @@ Required if you want to use decypharr as a SABnzbd-compatible download client fo
       "cache_dir": "/mnt/cache/decypharr-cache",
       "vfs_cache_mode": "full",
       "vfs_cache_max_age": "12h",
-      "vfs_cache_max_size": "42949672960",
+      "vfs_cache_max_size": "40G",
       "vfs_cache_poll_interval": "15s",
-      "vfs_read_chunk_size": "128M",
-      "vfs_read_chunk_size_limit": "512M",
-      "vfs_read_ahead": "0M",
+      "vfs_read_chunk_size": "256M",
+      "vfs_read_chunk_size_limit": "1G",
+      "vfs_read_ahead": "512M",
       "vfs_fast_fingerprint": true,
       "buffer_size": "32M",
       "async_read": true,
-      "transfers": 1,
+      "transfers": 2,
       "uid": 1000,
       "gid": 1000,
       "attr_timeout": "1h",
       "dir_cache_time": "5m",
+      "daemon_timeout": "30s",
       "log_level": "INFO"
     }
   }
@@ -250,20 +296,32 @@ Required if you want to use decypharr as a SABnzbd-compatible download client fo
 | `mount_path` | Where decypharr mounts the debrid virtual filesystem |
 | `rclone.port` | rclone RC (remote control) port |
 | `rclone.cache_dir` | Local disk cache for VFS; should be on fast storage |
-| `vfs_cache_mode` | `full` recommended for media streaming |
-| `vfs_cache_max_age` | How long cached files are kept. Set equal to or greater than `auto_expire_links_after` on the debrid provider |
-| `vfs_cache_max_size` | Max cache size in bytes (e.g. `42949672960` = 40 GB) |
-| `vfs_cache_poll_interval` | How often rclone polls for expired cache entries |
-| `vfs_read_chunk_size` | Initial chunk size per read request |
-| `vfs_read_chunk_size_limit` | Maximum chunk size after exponential growth |
-| `vfs_read_ahead` | Bytes to pre-fetch ahead of current read position (`0M` disables) |
-| `vfs_fast_fingerprint` | Use fast file fingerprinting — recommended; avoids full-stat overhead and is safe when file sizes are trusted |
+| `vfs_cache_mode` | `"full"` recommended for media streaming (`"off"`, `"minimal"`, `"writes"`, `"full"`) |
+| `vfs_cache_max_age` | How long cached files are kept. Set ≥ `auto_expire_links_after` on the debrid provider |
+| `vfs_cache_max_size` | Max VFS cache size as a human-readable string: `"40G"`, `"500M"`, etc. |
+| `vfs_disk_space_total` | Total disk space available for the VFS cache (alternative to `vfs_cache_max_size`) |
+| `vfs_cache_min_free_space` | Minimum free disk space to maintain (e.g. `"10G"`) |
+| `vfs_cache_poll_interval` | How often rclone evicts expired cache entries |
+| `vfs_read_chunk_size` | Initial chunk size per read request (e.g. `"256M"`) |
+| `vfs_read_chunk_size_limit` | Maximum chunk size after exponential growth (e.g. `"1G"`). `"off"` disables the limit |
+| `vfs_read_chunk_streams` | Number of parallel streams per chunk fetch (0 = rclone default) |
+| `vfs_read_ahead` | Bytes to pre-fetch ahead of current read position (e.g. `"512M"`, `"0"` to disable) |
+| `vfs_fast_fingerprint` | Use fast file fingerprinting — recommended; safe when file sizes are trusted |
 | `buffer_size` | In-memory buffer per transfer |
-| `async_read` | Read ahead asynchronously |
-| `transfers` | Number of concurrent rclone transfers |
+| `async_read` | Read ahead asynchronously (default: `true`) |
+| `transfers` | Number of concurrent chunk pre-fetches. Set to `2` or higher to eliminate stalls at chunk boundaries for uncached content |
 | `uid` / `gid` | User/group for mounted files (should match your media server user) |
+| `umask` | Octal permission mask for mounted files (e.g. `"022"`) |
 | `attr_timeout` | How long to cache file attributes in the FUSE layer |
 | `dir_cache_time` | How long to cache directory listings |
+| `timeout` | HTTP IO idle timeout (e.g. `"5m"`). Shorter values prevent hung FUSE reads on stalled connections |
+| `connect_timeout` | HTTP connect timeout (e.g. `"1m"`) |
+| `daemon_timeout` | FUSE kernel operation timeout. After this duration, the kernel returns `ETIMEDOUT`, unblocking D-state processes. Recommended: `"30s"` |
+| `bw_limit` | Bandwidth limit for all rclone transfers (e.g. `"50M"`, `"off"`) |
+| `no_modtime` | Disable modification time reads/writes |
+| `no_checksum` | Disable file checksumming on upload |
+| `use_mmap` | Use memory-mapped I/O |
+| `log_level` | rclone log verbosity (`"DEBUG"`, `"INFO"`, `"NOTICE"`, `"ERROR"`) |
 
 ### `repair` — Automatic repair configuration
 
@@ -276,8 +334,10 @@ Required if you want to use decypharr as a SABnzbd-compatible download client fo
     "workers": 5,
     "nntp_connection_percent": 20,
     "strategy": "per_entry",
-    "recheck_interval": "14h",
-    "auto_repair": true
+    "recheck_interval": "168h",
+    "auto_repair": true,
+    "notify_on_complete": false,
+    "arrs": []
   }
 }
 ```
@@ -285,13 +345,35 @@ Required if you want to use decypharr as a SABnzbd-compatible download client fo
 | Field | Description |
 |---|---|
 | `enabled` | Enable the repair subsystem |
-| `source` | Where to get the list of items to check: `"arr"` pulls from connected Arr queues |
+| `source` | Where to enumerate items: `"arr"` (pull from connected Arr queues), `"managed"` |
 | `schedule` | Cron expression for repair sweeps (e.g. `"0 */12 * * *"` = every 12 hours) |
-| `workers` | Concurrent repair goroutines |
-| `nntp_connection_percent` | Percentage of usenet connections to use during repair (avoids saturating live streaming) |
+| `workers` | Concurrent repair goroutines (default: 5) |
+| `nntp_connection_percent` | Percentage of total NNTP connections reserved for repair (default: 20). Prevents repair from starving live streaming |
 | `strategy` | Repair strategy: `"per_entry"` repairs one item fully before moving to the next |
-| `recheck_interval` | Minimum interval before rechecking the same item |
-| `auto_repair` | Automatically repair without manual trigger |
+| `recheck_interval` | Minimum interval before rechecking the same item (default: `"168h"` = 7 days) |
+| `auto_repair` | Automatically trigger repair without manual intervention |
+| `notify_on_complete` | Send a notification when a repair sweep completes |
+| `arrs` | Optional list of Arr names to limit repair scope (e.g. `["sonarr"]`). Empty = repair items from all configured Arrs |
+
+### `notifications` — Notification configuration
+
+```json
+{
+  "notifications": {
+    "enabled": true,
+    "webhook_url": "https://discord.com/api/webhooks/YOUR_WEBHOOK",
+    "callback_url": "https://your-service.example.com/decypharr/callback",
+    "events": ["download_complete", "download_failed", "repair_complete", "repair_failed"]
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `enabled` | Enable notifications globally |
+| `webhook_url` | Discord webhook URL for event notifications |
+| `callback_url` | HTTP endpoint for status callbacks |
+| `events` | List of events to notify. Omit or leave empty to notify on all events. Valid values: `download_complete`, `download_failed`, `repair_pending`, `repair_complete`, `repair_failed`, `repair_cancelled` |
 
 ---
 

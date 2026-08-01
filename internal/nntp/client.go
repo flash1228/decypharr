@@ -865,6 +865,20 @@ func (c *Client) Stat(ctx context.Context, messageID string) (int, string, error
 	return num, id, err
 }
 
+// HeadCheck verifies that the article body is actually retrievable by sending
+// an NNTP HEAD command (not just STAT). Some servers return STAT OK for expired
+// articles whose body has been deleted; HEAD returns 430 in that case.
+// Used as a lightweight second-pass probe after BatchStat passes.
+func (c *Client) HeadCheck(ctx context.Context, messageID string) error {
+	if c.closed.Load() {
+		return errors.New("nntp client is closed")
+	}
+	return c.ExecuteWithFailover(ctx, func(conn *Connection) error {
+		_, err := conn.GetHead(messageID)
+		return err
+	})
+}
+
 // chunkResult holds the results from a single chunk of PipelinedStat
 type chunkResult struct {
 	startIdx int          // Index into original messageIDs slice

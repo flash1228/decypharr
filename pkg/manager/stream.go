@@ -12,6 +12,8 @@ import (
 	"sync"
 
 	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/sirrobot01/decypharr/internal/customerror"
+	"github.com/sirrobot01/decypharr/internal/nntp"
 	"github.com/sirrobot01/decypharr/internal/retry"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/storage"
@@ -205,6 +207,11 @@ func (m *Manager) streamHTTP(ctx context.Context, torrent *storage.Entry, filena
 	// Get the validated download link using the link service
 	downloadLink, err := m.linkService.GetLink(ctx, torrent, filename)
 	if err != nil {
+		if errors.Is(err, customerror.HosterUnavailableError) {
+			// Debrid hoster blocked or DMCA-removed — flag for repair sweep so
+			// Radarr/Sonarr can trigger a re-search for a working source.
+			m.storage.MarkEntryDirty(torrent.Name, config.ProtocolTorrent, "hoster_unavailable")
+		}
 		return fmt.Errorf("failed to get download link: %w", err)
 	}
 
@@ -332,10 +339,17 @@ func (m *Manager) streamUsenet(ctx context.Context, entry *storage.Entry, filena
 
 	// Stream NZB content directly into writer
 	streamErr := m.usenet.Stream(ctx, entry.InfoHash, filename, start, end, writer)
-	if streamErr != nil && errors.Is(streamErr, usenet.ErrNZBNotFound) {
-		// NZB metadata is permanently gone — flag the entry for the next repair sweep
-		// so Radarr/Sonarr will be notified and can trigger a re-search.
-		m.storage.MarkEntryDirty(entry.Name, config.ProtocolNZB, "nzb_not_found")
+	if streamErr != nil {
+		switch {
+		case errors.Is(streamErr, usenet.ErrNZBNotFound):
+			// NZB metadata is permanently gone — flag for repair sweep.
+			m.storage.MarkEntryDirty(entry.Name, config.ProtocolNZB, "nzb_not_found")
+		case nntp.IsArticleNotFoundError(streamErr):
+			// NNTP article expired (code 430) — STAT still reports the article as
+			// present in the index but the body is gone. Flag so the repair sweep
+			// classifies the entry as broken and triggers a Sonarr/Radarr re-search.
+			m.storage.MarkEntryDirty(entry.Name, config.ProtocolNZB, "article_not_found")
+		}
 	}
 	return streamErr
 }

@@ -28,6 +28,13 @@ func isSample(path string) bool {
 	return sampleRegex.MatchString(filename)
 }
 
+// GetBdMainFileOnly returns true (the default) unless explicitly disabled in config.
+// When true, only the largest .m2ts file is selected from Blu-ray rips to prevent
+// 429 errors from probing every secondary stream file.
+func (c *Config) GetBdMainFileOnly() bool {
+	return c.BdMainFileOnly == nil || *c.BdMainFileOnly
+}
+
 func (c *Config) IsFileAllowed(filename string, filesize int64) error {
 	// Skip samples if configured
 	if !c.AllowSamples && isSample(filename) {

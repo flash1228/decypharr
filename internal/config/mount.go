@@ -38,6 +38,7 @@ type Rclone struct {
 	DirCacheTime   string `json:"dir_cache_time,omitempty"`  // Directory cache time (default 5m)
 	Timeout        string `json:"timeout,omitempty"`         // HTTP IO idle timeout (default 5m); shorter values prevent hung FUSE reads
 	ConnectTimeout string `json:"connect_timeout,omitempty"` // HTTP connect timeout (default 1m)
+	DaemonTimeout  string `json:"daemon_timeout,omitempty"`  // FUSE kernel op timeout — kernel returns ETIMEDOUT after this, unblocking D-state processes
 
 	// Performance settings
 	NoModTime  bool `json:"no_modtime,omitempty"`  // Don't read/write modification time
