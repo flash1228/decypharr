@@ -20,6 +20,8 @@ func (m *Manager) runInitialCalls(ctx context.Context) {
 	// Recover TorBox usenet entries whose processSymlink goroutine was interrupted
 	// by a restart (state=pausedUP, IsComplete=false). Must run after queue is loaded.
 	go m.recoverTorboxUsenetEntries()
+	// Recover torrent entries stuck in downloaded/pausedUP state with incomplete symlinks.
+	go m.recoverStuckTorrentEntries()
 }
 
 func (m *Manager) syncAccounts() {

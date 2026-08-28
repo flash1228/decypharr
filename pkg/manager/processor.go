@@ -112,6 +112,35 @@ func (m *Manager) recoverTorboxUsenetEntries() {
 	}
 }
 
+// recoverStuckTorrentEntries is called once on startup to re-process torrent
+// entries where debrid marked the torrent downloaded but processSymlink timed
+// out waiting for VFS files and left IsDownloading=true without completing.
+// These entries are stuck in downloading state and processQueuedEntries skips
+// them because IsDownloading is true. Reset the flag so processAction can retry.
+func (m *Manager) recoverStuckTorrentEntries() {
+	downloading := m.queue.ListFilter("", config.ProtocolTorrent, storage.EntryStateDownloading, nil, "", false)
+	for _, entry := range downloading {
+		if entry.IsComplete || entry.ActiveProvider == "" {
+			continue
+		}
+		// Only recover entries that debrid already finished but symlink creation
+		// was interrupted (IsDownloading stuck true, status=downloaded).
+		if !entry.IsDownloading || entry.Status != debridTypes.TorrentStatusDownloaded {
+			continue
+		}
+		if _, loaded := m.processingEntries.LoadOrStore(entry.InfoHash, struct{}{}); loaded {
+			continue
+		}
+		m.logger.Info().Str("name", entry.Name).Msg("Recovering stuck torrent entry: resetting IsDownloading and retrying symlink")
+		entry.IsDownloading = false
+		_ = m.queue.Update(entry)
+		go func(e *storage.Entry) {
+			defer m.processingEntries.Delete(e.InfoHash)
+			m.processAction(e)
+		}(entry)
+	}
+}
+
 func (m *Manager) processQueuedEntries() {
 	queueEntries := m.queue.ListFilter("", config.ProtocolAll, storage.EntryStateDownloading, nil, "", true)
 	if len(queueEntries) == 0 {
