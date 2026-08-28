@@ -694,7 +694,7 @@ func (m *Manager) processFromQueue(ctx context.Context) error {
 // case where a service restart caused Sonarr/Radarr to miss the completion
 // notification and the import never happened.
 func (m *Manager) renotifyCompletedEntries() {
-	completed := m.queue.ListFilter("", config.ProtocolNZB, storage.EntryStatePausedUP, nil, "", false)
+	completed := m.queue.ListFilter("", config.ProtocolAll, storage.EntryStatePausedUP, nil, "", false)
 	if len(completed) == 0 {
 		return
 	}
