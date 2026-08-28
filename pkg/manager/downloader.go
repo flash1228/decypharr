@@ -224,7 +224,13 @@ func (d *Downloader) chownPath(path string) {
 }
 
 // processSymlink creates symlinks for torrent files
-func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) error {
+func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			entry.IsDownloading = false
+			_ = d.manager.queue.Update(entry)
+		}
+	}()
 	files := entry.GetActiveFiles()
 
 	if d.manager.config.GetBdMainFileOnly() {
