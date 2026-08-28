@@ -112,6 +112,27 @@ func (m *Manager) recoverTorboxUsenetEntries() {
 	}
 }
 
+// recoverStuckTorrentEntries is called once on startup to re-process torrent
+// entries that were marked downloaded by debrid but whose processSymlink
+// goroutine never finished (IsComplete=false). This happens when the VFS is
+// not ready during symlink creation or when the process is interrupted.
+func (m *Manager) recoverStuckTorrentEntries() {
+	pausedUP := m.queue.ListFilter("", config.ProtocolTorrent, storage.EntryStatePausedUP, nil, "", false)
+	for _, entry := range pausedUP {
+		if entry.IsComplete || entry.ActiveProvider == "" {
+			continue
+		}
+		if _, loaded := m.processingEntries.LoadOrStore(entry.InfoHash, struct{}{}); loaded {
+			continue
+		}
+		m.logger.Info().Str("name", entry.Name).Msg("Recovering stuck torrent entry after restart")
+		go func(e *storage.Entry) {
+			defer m.processingEntries.Delete(e.InfoHash)
+			m.processAction(e)
+		}(entry)
+	}
+}
+
 func (m *Manager) processQueuedEntries() {
 	queueEntries := m.queue.ListFilter("", config.ProtocolAll, storage.EntryStateDownloading, nil, "", true)
 	if len(queueEntries) == 0 {
